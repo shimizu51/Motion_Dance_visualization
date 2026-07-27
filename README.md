@@ -9,11 +9,11 @@
 
 ## デモ（推論前 / 推論後）
 
-`data/input/Magnetic.mp4` の 8 秒区間（0:30〜0:38）を `extract` → `render` した比較。
+`data/input/Magnetic.mp4` の 8 秒区間（1:18〜1:26）を `extract` → `render` した比較。
 
 | 推論前（元動画） | 推論後（骨格＋残差の可視化） |
 |---|---|
-| <video src="assets/demo/before.mp4" controls muted loop width="420"></video> | <video src="assets/demo/after.mp4" controls muted loop width="420"></video> |
+| ![推論前](assets/demo/before.gif) | ![推論後](assets/demo/after.gif) |
 
 ## モデルの構成要素
 
