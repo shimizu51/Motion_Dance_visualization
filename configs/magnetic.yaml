@@ -1,0 +1,3 @@
+# data/input/Magnetic.mp4 用の上書き設定。
+# 試作段階では video.start / video.duration を CLI の --start / --duration で
+# 都度指定する運用にし、ここでは今のところ既定値からの変更はなし。

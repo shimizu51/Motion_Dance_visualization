@@ -1,0 +1,24 @@
+[project]
+name = "pose-viz"
+version = "0.1.0"
+description = "映像から骨格を取り出し、残差を残しながら可視化するアート作品用パイプライン"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "transformers>=4.49",
+    "rfdetr>=1.0",
+    "supervision>=0.24",
+    "opencv-python-headless>=4.10",
+    "numpy>=1.26,<2.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+pose-viz = "pose_viz.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"

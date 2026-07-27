@@ -1,0 +1,46 @@
+video:
+  width: 1920
+  fps: null
+  start: 0.0
+  duration: null
+
+detect:
+  model: RFDETRSegSmall
+  threshold: 0.5
+  min_area_ratio: 0.002
+
+track:
+  iou_threshold: 0.3
+  max_age: 15
+  min_hits: 3
+
+pose:
+  model: usyd-community/vitpose-base-simple
+  keypoint_score_threshold: 0.3
+  oneeuro:
+    min_cutoff: 1.0
+    beta: 0.01
+
+akaze:
+  trail_mode: akaze
+  ratio_test: 0.75
+  max_displacement: 60.0
+  max_points_per_person: 400
+
+residual:
+  lifetime_sec: 0.8
+  gamma: 1.6
+  lifetime_boost_k: 1.0
+  joint_trail_len: 20
+  norm_scale: 8.0
+  max_trail_len: 40
+
+render:
+  ghost_alpha: 0.15
+  ghost_blur: 9
+  ghost_desaturate: 0.8
+  particle_glow: 11
+  skeleton_bloom: [5, 25]
+  bone_thickness: 3
+  vignette: 0.2
+  grain: 0.02
