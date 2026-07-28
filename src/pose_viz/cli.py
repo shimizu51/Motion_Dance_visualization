@@ -239,6 +239,39 @@ def cmd_render(args: argparse.Namespace) -> None:
         print(f"saved: {out_path}")
 
 
+def _default_features_path(cache_path: Path) -> Path:
+    stem = cache_path.name.removesuffix(".pkl.gz")
+    return REPO_ROOT / "data" / "features" / f"{stem}.csv"
+
+
+def cmd_features(args: argparse.Namespace) -> None:
+    """キャッシュから解釈可能な動作特徴量を計算して CSV に書き出す（モデル推論なし）。"""
+    from pose_viz.features.export import compute_features, write_summary_csv, write_timeseries_csv
+
+    cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    cache.check_hash(cfg.extract_hash())
+
+    out_path = Path(args.out) if args.out else _default_features_path(cache_path)
+    summary_path = out_path.with_name(f"{out_path.stem}_summary.csv")
+
+    print(f"computing features ({len(cache.by_track())} tracks, source={cfg.feature.source})...")
+    features = compute_features(cache, cfg.feature)
+
+    rows = write_timeseries_csv(out_path, features)
+    write_summary_csv(summary_path, features, cache)
+    print(f"saved timeseries: {out_path} ({rows} rows)")
+    print(f"saved summary:    {summary_path} ({len(features)} tracks)")
+
+    if args.plot:
+        from pose_viz.features.plots import plot_tracks
+
+        plot_dir = Path(args.plot_dir) if args.plot_dir else out_path.parent / f"{out_path.stem}_plots"
+        paths = plot_tracks(features, plot_dir, top_n=args.plot_top)
+        print(f"saved plots:      {plot_dir} ({len(paths)} figures)")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     video_path = Path(args.video)
     cache_path = Path(args.cache) if args.cache else _default_cache_path(video_path)
@@ -281,6 +314,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--audio", action="store_true", help="元動画の音声をミックスする")
     p_render.add_argument("--no-audio", action="store_true", help="(内部用) 音声を付けない")
     p_render.set_defaults(func=cmd_render)
+
+    p_feat = sub.add_parser("features", help="キャッシュから解釈可能な動作特徴量を計算し CSV に出力する")
+    p_feat.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_feat.add_argument("--out", help="時系列 CSV の出力先（既定: data/features/<キャッシュ名>.csv）")
+    p_feat.add_argument("--config", help="上書き設定 YAML")
+    p_feat.add_argument("--plot", action="store_true", help="検証用のグラフ（PNG）も出力する")
+    p_feat.add_argument("--plot-dir", help="グラフの出力先ディレクトリ")
+    p_feat.add_argument("--plot-top", type=int, default=3, help="グラフ化するトラック数（長い順）")
+    p_feat.set_defaults(func=cmd_features)
 
     p_run = sub.add_parser("run", help="extract と render を通しで実行する")
     p_run.add_argument("video", help="入力動画パス")

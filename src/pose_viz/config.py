@@ -87,6 +87,30 @@ class CameraConfig:
 
 
 @dataclass
+class FeatureConfig:
+    """解釈可能な動作特徴量の算出パラメータ。
+
+    キャッシュ済みの抽出結果から計算する **分析側** の設定なので、`extract_hash()` には含めない
+    （ここを変えても再 extract は不要）。
+    """
+
+    source: str = "raw"  # "raw"（平滑化前・計測用）| "smoothed"（One-Euro 後・比較用）
+    min_score: float = 0.3  # これ未満のキーポイントは欠損として扱う（スコアは確率ではない点に注意）
+    max_gap_sec: float = 0.2  # これ以下の欠損は線形補間する。超えるとセグメントを分割する
+    scale_window_sec: float = 2.0  # 体幹長の移動中央値の窓（面外回転による瞬間的短縮を均す）
+    deriv_window_sec: float = 0.25  # Savitzky-Golay の窓（秒指定なので fps に依存しない）
+    deriv_polyorder: int = 3
+    foreshorten_threshold: float = 0.6  # セグメント長がこの比率を下回る区間は関節角度を信用しない
+    flip_min_sec: float = 0.2  # これより短い体の向きの反転は L/R 取り違えとみなす
+    sparc_window_sec: float = 2.0
+    symmetry_window_sec: float = 2.0
+    rhythm_min_period_sec: float = 0.25
+    rhythm_max_period_sec: float = 4.0
+    load_percentile: float = 95.0  # 負荷代理指標の正規化基準（動画内相対）
+    load_weights: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)  # 角速度・角加速度・ROM逸脱・制動
+
+
+@dataclass
 class ResidualConfig:
     lifetime_sec: float = 0.8
     gamma: float = 1.6
@@ -118,6 +142,7 @@ class Config:
     pose: PoseConfig = field(default_factory=PoseConfig)
     akaze: AkazeConfig = field(default_factory=AkazeConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
+    feature: FeatureConfig = field(default_factory=FeatureConfig)
     residual: ResidualConfig = field(default_factory=ResidualConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
 
@@ -136,10 +161,10 @@ class Config:
     def extract_hash(self) -> str:
         """extract 段階の結果を左右する設定だけを対象にしたハッシュ。
 
-        render 側のパラメータ（配色・寿命の見た目調整など）を変えてもキャッシュは
-        無効化しない。`video.start`/`duration` はどの区間を切り出すかの指定であって
-        設定内容そのものではない（`cache.start`/`cache.duration` で別途管理する）ため、
-        ここには含めない。
+        render 側のパラメータ（配色・寿命の見た目調整など）と feature 側のパラメータ
+        （特徴量の窓幅・閾値など）を変えてもキャッシュは無効化しない。`video.start`/`duration` は
+        どの区間を切り出すかの指定であって設定内容そのものではない（`cache.start`/`cache.duration`
+        で別途管理する）ため、ここには含めない。
         """
         payload = {
             "video_width": self.video.width,

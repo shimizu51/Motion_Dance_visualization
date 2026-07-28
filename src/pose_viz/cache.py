@@ -108,6 +108,20 @@ def encode_mask_crop(mask_full: np.ndarray, box_xyxy: np.ndarray) -> bytes | Non
     return buf.tobytes()
 
 
+def mask_crop_origin(box_xyxy: np.ndarray) -> tuple[int, int]:
+    """`encode_mask_crop` が使ったクロップ左上原点（フル解像度座標）を返す。"""
+    return int(max(0, np.floor(box_xyxy[0]))), int(max(0, np.floor(box_xyxy[1])))
+
+
+def decode_mask_crop_only(mask_png: bytes) -> np.ndarray | None:
+    """PNG をクロップのまま（フルフレームに配置せずに）二値で復元する。
+
+    面積や差分だけが必要な用途では、フルフレームのキャンバスを毎回確保するより桁違いに軽い。
+    """
+    crop = cv2.imdecode(np.frombuffer(mask_png, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    return None if crop is None else crop > 127
+
+
 def decode_mask_crop(mask_png: bytes, box_xyxy: np.ndarray, frame_shape: tuple[int, int]) -> np.ndarray:
     """PNG バイト列を復元し、フルフレームサイズのマスク(float32, 0..1)に配置する。"""
     h, w = frame_shape

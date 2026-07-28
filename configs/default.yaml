@@ -54,6 +54,23 @@ camera:
   ransac_threshold: 3.0
   mask_dilate: 15
 
+# 解釈可能な動作特徴量。分析側の設定なので extract_hash には含まれない（変えても再抽出は不要）。
+feature:
+  source: raw            # raw = 平滑化前（計測用） / smoothed = One-Euro 後（比較用）
+  min_score: 0.3
+  max_gap_sec: 0.2
+  scale_window_sec: 2.0
+  deriv_window_sec: 0.25
+  deriv_polyorder: 3
+  foreshorten_threshold: 0.6
+  flip_min_sec: 0.2
+  sparc_window_sec: 2.0
+  symmetry_window_sec: 2.0
+  rhythm_min_period_sec: 0.25
+  rhythm_max_period_sec: 4.0
+  load_percentile: 95.0
+  load_weights: [1.0, 1.0, 1.0, 1.0]   # 角速度・角加速度・ROM逸脱・制動（まず等重み）
+
 residual:
   lifetime_sec: 0.8
   gamma: 1.6
