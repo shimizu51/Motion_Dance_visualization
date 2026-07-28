@@ -690,6 +690,7 @@ name = "pose-viz"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "pyyaml" },
@@ -710,6 +711,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", specifier = ">=0.26" },
     { name = "numpy", specifier = ">=1.26,<2.0" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "pyyaml", specifier = ">=6.0" },

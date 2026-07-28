@@ -54,9 +54,18 @@ camera:
   ransac_threshold: 3.0
   mask_dilate: 15
 
+# 単眼 2D→3D リフティング（MotionBERT）。`pose-viz lift3d` でのみ使う。
+# 2D 関節角度が面外回転で歪む問題を潰す目的。出力は「関節角度」のまま説明可能。
+lift3d:
+  clip_len: 243          # モデルの上限
+  stride: null           # 窓の移動量（既定は clip_len の半分）
+  flip_augment: true     # 左右反転の平均。精度が上がる代わりに 2 倍の時間
+  device: null           # 既定は mps があれば mps
+
 # 解釈可能な動作特徴量。分析側の設定なので extract_hash には含まれない（変えても再抽出は不要）。
 feature:
   source: raw            # raw = 平滑化前（計測用） / smoothed = One-Euro 後（比較用）
+  angle_source: auto     # auto = 3D があれば 3D / 2d / 3d（検証時に固定する）
   min_score: 0.3
   max_gap_sec: 0.2
   scale_window_sec: 2.0

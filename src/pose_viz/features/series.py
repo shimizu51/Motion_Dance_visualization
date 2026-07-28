@@ -101,6 +101,7 @@ def build_track_series(cache: ExtractCache, cfg: FeatureConfig) -> dict[int, Tra
         score = np.full((n, N_KEYPOINTS), np.nan, dtype=np.float32)
         box = np.full((n, 4), np.nan, dtype=np.float32)
         observed = np.zeros(n, dtype=bool)
+        xyz = None
 
         for fi, tf in seq:
             k = fi - first
@@ -109,6 +110,10 @@ def build_track_series(cache: ExtractCache, cfg: FeatureConfig) -> dict[int, Tra
             score[k] = tf.keypoint_scores
             box[k] = tf.box_xyxy
             observed[k] = True
+            if tf.keypoints_3d is not None:
+                if xyz is None:
+                    xyz = np.full((n, N_KEYPOINTS, 3), np.nan, dtype=np.float32)
+                xyz[k] = tf.keypoints_3d
 
         # 低スコアのキーポイントは欠損として扱う（スコアは確率ではないので閾値は経験則）
         low = ~(score >= cfg.min_score)
@@ -157,6 +162,7 @@ def build_track_series(cache: ExtractCache, cfg: FeatureConfig) -> dict[int, Tra
             scale=scale.astype(np.float32),
             root=root,
             xy_rel=xy_rel.astype(np.float32),
+            xyz=xyz,
             segments=segments,
         )
     return out

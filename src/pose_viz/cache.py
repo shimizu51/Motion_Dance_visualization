@@ -10,7 +10,13 @@ import cv2
 import numpy as np
 
 
-CACHE_VERSION = 3  # スキーマを変えたら必ず上げる。読み込み時に不一致なら明確なエラーにする。
+# スキーマを変えたら必ず上げる。読み込み時に不一致なら明確なエラーにする。
+#
+# 例外: **既定値を持つ省略可能なフィールドの追加は上げない**。dataclass の既定値がクラス属性に
+# なるため、古い pickle（`__dict__` にそのキーを持たない）を読んでも既定値が返り、静かに壊れる
+# ことがない。80MB のキャッシュを再抽出（27分）させてまで版を上げる理由が無いため。
+# 版を上げるのは、既存フィールドの意味・形・単位が変わるときに限る。
+CACHE_VERSION = 3
 
 
 @dataclass
@@ -30,6 +36,9 @@ class TrackFrame:
     depth_score: float = 0.0
     occluded: bool = False  # このフレームで他人物と一定以上重なっているか
     recovered: bool = False  # low_threshold 帯の検出でトラックが継続されたフレームか
+    # (17, 3) float32, **H36M-17 の関節順**（`keypoints` の COCO-17 とは並びが違う）。
+    # `pose-viz lift3d` を走らせるまで None。root 相対で、単位は正規化空間（角度算出にのみ使う）。
+    keypoints_3d: np.ndarray | None = None
 
 
 @dataclass
@@ -63,10 +72,13 @@ class ExtractCache:
         return out
 
     def save(self, path: Path | str) -> None:
+        """一時ファイルに書いてから差し替える（途中で失敗しても既存キャッシュを壊さない）。"""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(path, "wb") as f:
+        tmp = path.with_name(path.name + ".tmp")
+        with gzip.open(tmp, "wb") as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
 
     @staticmethod
     def load(path: Path | str) -> "ExtractCache":

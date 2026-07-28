@@ -87,6 +87,20 @@ class CameraConfig:
 
 
 @dataclass
+class Lift3DConfig:
+    """単眼 2D→3D リフティング（MotionBERT）。`pose-viz lift3d` でのみ使う。
+
+    2D 関節角度は面外回転で系統的に歪むため、その計測誤差を潰す目的でのみ深層学習を使う。
+    出力は依然として「関節角度」という説明可能な量のまま。
+    """
+
+    clip_len: int = 243  # モデルの上限。これを超える値は指定できない
+    stride: int | None = None  # 窓の移動量（既定は clip_len の半分＝5割重ねる）
+    flip_augment: bool = True  # 左右反転を平均するテスト時拡張。精度が上がる代わりに 2 倍の時間
+    device: str | None = None  # 既定は mps があれば mps
+
+
+@dataclass
 class FeatureConfig:
     """解釈可能な動作特徴量の算出パラメータ。
 
@@ -95,6 +109,9 @@ class FeatureConfig:
     """
 
     source: str = "raw"  # "raw"（平滑化前・計測用）| "smoothed"（One-Euro 後・比較用）
+    #: 関節角度をどの座標から出すか。"auto" = キャッシュに 3D があれば 3D、無ければ 2D。
+    #: "2d" / "3d" は明示的に固定する（2D と 3D を突き合わせて検証したいときに使う）。
+    angle_source: str = "auto"
     min_score: float = 0.3  # これ未満のキーポイントは欠損として扱う（スコアは確率ではない点に注意）
     max_gap_sec: float = 0.2  # これ以下の欠損は線形補間する。超えるとセグメントを分割する
     scale_window_sec: float = 2.0  # 体幹長の移動中央値の窓（面外回転による瞬間的短縮を均す）
@@ -149,6 +166,7 @@ class Config:
     pose: PoseConfig = field(default_factory=PoseConfig)
     akaze: AkazeConfig = field(default_factory=AkazeConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
+    lift3d: Lift3DConfig = field(default_factory=Lift3DConfig)
     feature: FeatureConfig = field(default_factory=FeatureConfig)
     residual: ResidualConfig = field(default_factory=ResidualConfig)
     render: RenderConfig = field(default_factory=RenderConfig)

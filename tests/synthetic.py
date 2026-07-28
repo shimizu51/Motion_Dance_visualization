@@ -65,6 +65,21 @@ def bend_elbow(kp: np.ndarray, angle_rad: float, side: str = "l", stature_px: fl
     return kp
 
 
+def h36m_from_coco(kp: np.ndarray, depth: np.ndarray | None = None) -> np.ndarray:
+    """COCO-17 の (17,2) を H36M-17 の (17,3) に並べ替える（検証用の合成 3D を作る）。
+
+    `depth` を渡すと z にそれを入れる。渡さなければ z=0（＝カメラ面内の平面姿勢）。
+    """
+    from pose_viz.lift3d import coco2h36m
+
+    xyz = np.zeros((1, S.N_KEYPOINTS, 3), dtype=np.float32)
+    xyz[0, :, :2] = kp
+    out = coco2h36m(xyz)[0]
+    if depth is not None:
+        out[:, 2] = depth
+    return out.astype(np.float32)
+
+
 def make_cache(
     poses: list[np.ndarray],
     fps: float = 30.0,
@@ -72,6 +87,7 @@ def make_cache(
     present: list[bool] | None = None,
     scores: float = 0.9,
     camera_affine: np.ndarray | None = None,
+    poses_3d: list[np.ndarray] | None = None,
 ) -> ExtractCache:
     """`poses[i]` をフレーム i のキーポイントとする最小のキャッシュを作る。
 
@@ -98,6 +114,7 @@ def make_cache(
                 akaze_residual=np.zeros((0, 2), dtype=np.float32),
                 akaze_residual_mag=np.zeros(0, dtype=np.float32),
                 akaze_point_ids=np.zeros(0, dtype=np.int64),
+                keypoints_3d=None if poses_3d is None else poses_3d[i].astype(np.float32),
             )
         ]
     return ExtractCache(

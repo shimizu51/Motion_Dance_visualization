@@ -252,6 +252,55 @@ def cmd_render(args: argparse.Namespace) -> None:
         print(f"saved: {out_path}")
 
 
+def cmd_lift3d(args: argparse.Namespace) -> None:
+    """キャッシュの 2D キーポイントを 3D に持ち上げ、同じキャッシュに書き戻す。
+
+    モデル推論を伴うので extract 側の処理。`render.py` からは決して呼ばれない（不変条件③）。
+    既存フィールドは一切書き換えず `keypoints_3d` を足すだけなので、スキーマ版は据え置き。
+    """
+    from tqdm import tqdm
+
+    from pose_viz.lift3d import Pose3DLifter
+
+    cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    out_path = Path(args.out) if args.out else cache_path
+
+    by_track = cache.by_track()
+    total = sum(len(seq) for seq in by_track.values())
+    print(f"loading MotionBERT... ({len(by_track)} tracks, {total} records)")
+    lifter = Pose3DLifter(
+        clip_len=cfg.lift3d.clip_len,
+        stride=cfg.lift3d.stride,
+        flip_augment=cfg.lift3d.flip_augment,
+        device=cfg.lift3d.device,
+    )
+    print(f"  device={lifter.device}  clip_len={lifter.clip_len} stride={lifter.stride} flip={lifter.flip_augment}")
+
+    lifted = 0
+    for track_id, seq in tqdm(sorted(by_track.items()), desc="lift3d"):
+        # トラックの観測範囲を 1 刻みで埋めた密な系列にしてから持ち上げる
+        # （欠損をまたいで詰めると、存在しない動きを作ってしまう）
+        first, last = seq[0][0], seq[-1][0]
+        n = last - first + 1
+        xy = np.full((n, 17, 2), np.nan, dtype=np.float32)
+        sc = np.zeros((n, 17), dtype=np.float32)
+        for frame_idx, tf in seq:
+            xy[frame_idx - first] = tf.keypoints_raw
+            sc[frame_idx - first] = tf.keypoint_scores
+
+        xyz = lifter.lift(xy, sc)
+        for frame_idx, tf in seq:
+            row = xyz[frame_idx - first]
+            tf.keypoints_3d = row if np.isfinite(row).all() else None
+            lifted += tf.keypoints_3d is not None
+
+    cache.save(out_path)
+    print(f"saved cache: {out_path}")
+    print(f"  3D lifted: {lifted}/{total} records ({lifted / total:.1%})")
+
+
 def _default_features_path(cache_path: Path) -> Path:
     stem = cache_path.name.removesuffix(".pkl.gz")
     return REPO_ROOT / "data" / "features" / f"{stem}.csv"
@@ -271,6 +320,9 @@ def cmd_features(args: argparse.Namespace) -> None:
 
     print(f"computing features ({len(cache.by_track())} tracks, source={cfg.feature.source})...")
     features = compute_features(cache, cfg.feature)
+    if features:
+        used = next(iter(features.values())).angles.source
+        print(f"  joint angles from: {used.upper()}" + ("" if used == "3d" else "（`pose-viz lift3d` で 3D 化できます）"))
 
     rows = write_timeseries_csv(out_path, features)
     write_summary_csv(summary_path, features, cache)
@@ -333,6 +385,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--audio", action="store_true", help="元動画の音声をミックスする")
     p_render.add_argument("--no-audio", action="store_true", help="(内部用) 音声を付けない")
     p_render.set_defaults(func=cmd_render)
+
+    p_lift = sub.add_parser("lift3d", help="キャッシュの 2D キーポイントを MotionBERT で 3D に持ち上げる")
+    p_lift.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_lift.add_argument("--out", help="書き出し先（既定: --cache と同じファイルを更新）")
+    p_lift.add_argument("--config", help="上書き設定 YAML")
+    p_lift.set_defaults(func=cmd_lift3d)
 
     p_feat = sub.add_parser("features", help="キャッシュから解釈可能な動作特徴量を計算し CSV に出力する")
     p_feat.add_argument("--cache", required=True, help="extract で作成したキャッシュ")

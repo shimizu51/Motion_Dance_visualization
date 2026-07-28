@@ -151,7 +151,7 @@ def write_summary_csv(path: Path | str, features: dict[int, TrackFeatures], cach
     # 数分の連続したダンス全体に一度だけ適用した値は長さと内容に依存し、トラック間で比較できない。
     header = [
         "track_id", "n_frames", "duration_sec", "first_frame", "last_frame",
-        "observed_frac", "n_segments", "lr_suspect_frac",
+        "observed_frac", "n_segments", "lr_suspect_frac", "angle_source",
         "sparc_median", "period_sec", "bpm", "rhythm_confidence",
     ]
     # 中央値を必ず併記する。2D 姿勢推定は 0.1〜0.4% のフレームでキーポイントが飛び、
@@ -176,6 +176,7 @@ def write_summary_csv(path: Path | str, features: dict[int, TrackFeatures], cach
                 f"{s.coverage():.4f}",
                 len(s.segments),
                 f"{float(tf.posture.lr_suspect.mean()):.4f}",
+                tf.angles.source,
                 _fmt(nan_percentile(tf.sparc_window, 50)),
                 _fmt(tf.rhythm.period_sec),
                 _fmt(tf.rhythm.bpm),

@@ -40,6 +40,23 @@ JOINT_ANGLES: dict[str, tuple[int, int, int]] = {
     "r_knee": (R_HIP, R_KNEE, R_ANKLE),
 }
 
+#: 3D（H36M-17 の関節順）で同じ角度を測るための 3 点。`JOINT_ANGLES` と **キーが一致している**
+#: 必要がある（2D と 3D を差し替えても列名が変わらないようにするため）。
+#: 添字の出典は `pose_viz.lift3d`（MotionBERT の入出力フォーマット）。
+JOINT_ANGLES_3D: dict[str, tuple[int, int, int]] = {
+    "l_elbow": (11, 12, 13),  # L肩 - L肘 - L手首
+    "r_elbow": (14, 15, 16),
+    "l_shoulder": (4, 11, 12),  # L股 - L肩 - L肘
+    "r_shoulder": (1, 14, 15),
+    "l_hip": (11, 4, 5),  # L肩 - L股 - L膝
+    "r_hip": (14, 1, 2),
+    "l_knee": (4, 5, 6),  # L股 - L膝 - L足首
+    "r_knee": (1, 2, 3),
+}
+
+#: 3D 側の体幹ベクトル（骨盤 → 胸郭）
+H36M_HIP, H36M_THORAX = 0, 8
+
 #: 左右対をなす関節角度（対称性の算出に使う）
 ANGLE_PAIRS = [("l_elbow", "r_elbow"), ("l_shoulder", "r_shoulder"), ("l_hip", "r_hip"), ("l_knee", "r_knee")]
 
@@ -86,6 +103,9 @@ class TrackSeries:
     scale: np.ndarray  # (T,) float32、体幹長の移動中央値（px）。正規化の基準
     root: np.ndarray  # (T, 2) float32、腰中点
     xy_rel: np.ndarray  # (T, 17, 2) float32、root 相対のピクセル座標（カメラ運動に不変）
+    #: (T, 17, 3) float32、**H36M-17 の関節順**（`xy` の COCO-17 とは並びが違う）。
+    #: `pose-viz lift3d` を走らせていないキャッシュでは None。
+    xyz: np.ndarray | None = None
     #: 長い欠損で切った連続区間 [start, end)。特徴量はこの単位で計算する
     segments: list[tuple[int, int]] = field(default_factory=list)
 

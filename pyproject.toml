@@ -8,6 +8,7 @@ dependencies = [
     "torch>=2.4",
     "torchvision>=0.19",
     "transformers>=4.49",
+    "huggingface-hub>=0.26",
     "rfdetr>=1.0",
     "supervision>=0.24",
     "opencv-python-headless>=4.10",
