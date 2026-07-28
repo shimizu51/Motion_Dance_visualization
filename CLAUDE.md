@@ -55,13 +55,14 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
    プロトコルの差し替え（SAM2 等）で対応できる形にしてある。
 3. **rfdetr の MPS 対応** — 公式に MPS 対応の明記がないため、動かない場合は検出のみ CPU にフォールバックする。
 4. **全尺（166秒）の処理時間・メモリ計測** — 現状は 10〜20秒の試作クリップで検証する段階。
-5. **テスト・lint の自動化** — pytest／ruff の設定はまだ無い。
+5. **lint の自動化** — pytest は導入済み（`uv run pytest`、合成信号による解析解の検証）。ruff の設定はまだ無い。
 
 ## ディレクトリ構成
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
@@ -157,7 +158,14 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
   人物の上にだけ乗っているかを目視確認する。
 - **キャッシュの再利用確認**: 同じ設定で `extract` を2回走らせて2回目がスキップされること、
   設定を変えると警告が出ることを確認する。
-- **自動テストは未整備**。配線チェックは短尺クリップ＋`--debug-overlay` を最短の検証手段とする。
+- **動作特徴量の算出と検証**（モデル推論なし。全尺でも 10 秒程度）:
+  ```bash
+  uv run pose-viz features --cache data/cache/<name>.pkl.gz --plot
+  # → data/features/<name>.csv（時系列）、<name>_summary.csv（トラック別要約）、<name>_plots/（検証グラフ）
+  ```
+- **テスト**: `uv run pytest`。正解データが無い領域なので、**既知の合成信号に対して解析解が
+  出るか**を検証の軸にしている（角度・角速度・周期・SPARC・カメラ補正）。
+  パラメータや式を変えたら必ずここを通す。
 
 ## 作業時の指針
 

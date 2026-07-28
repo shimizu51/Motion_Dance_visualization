@@ -44,7 +44,8 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
@@ -61,6 +62,7 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 - `data/input/` … 入力動画（`Magnetic.mp4`：3840x2160・AV1・23.976fps・166秒・Opus音声）。**git 管理外**
 - `data/cache/` … extract の出力（`.pkl.gz`）。**git 管理外**（重いので再生成する前提）
 - `data/output/` … render の出力動画。**git 管理外**
+- `data/features/` … features の出力（CSV・グラフ）。**git 管理外**
 
 ## セットアップ
 
@@ -111,6 +113,37 @@ uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --out data/output/magn
 uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --debug-overlay --out data/output/debug.mp4
 ```
 
+### features（動作特徴量の算出、モデル推論なし）
+
+キャッシュから解釈可能な動作特徴量（関節角度・角速度・速度・SPARC・重心・収縮指数・QoM・
+左右対称性・関節負荷の代理指標・動きの周期）を計算し、CSV とグラフに出力する。
+全尺 171 秒・19 トラックでも 10 秒程度で終わる。
+
+```bash
+uv run pose-viz features --cache data/cache/jellyous.pkl.gz --plot
+```
+
+| オプション | 内容 |
+|---|---|
+| `--cache` | extract で作成したキャッシュ（必須） |
+| `--out` | 時系列 CSV の出力先（既定: `data/features/<キャッシュ名>.csv`） |
+| `--config` | 上書き設定 YAML |
+| `--plot` | 検証用のグラフ（PNG）も出力する |
+| `--plot-top` | グラフ化するトラック数（長い順、既定 3） |
+
+出力は 3 つ。
+
+- `<name>.csv` … 1 行 = 1 トラックの 1 フレーム（wide 形式）
+- `<name>_summary.csv` … 1 行 = 1 トラック。**各指標に平均・中央値・p95 と「有効値の割合」を併記する**
+- `<name>_plots/` … 検証用のグラフ
+
+読むときの注意:
+
+- **単位は body-length/秒**（体幹長で正規化した無次元長 ÷ 秒）。カメラ距離・体格差・fps に依存しない。
+- **`load_*` は負荷の「代理指標」であり力学的な関節荷重ではない。** 同じ動画の中でのみ比較できる（§不変条件）。
+- **平均と中央値の乖離は外れ値の目安。** 2D 姿勢推定は 0.1〜0.4% のフレームでキーポイントが飛び、
+  そこだけ非現実的な速度が出る。頑健な統計量は中央値・p95 のほう。
+
 ### run（extract → render を通しで実行）
 
 ```bash
@@ -156,7 +189,7 @@ uv run pose-viz run data/input/Magnetic.mp4 --out data/output/magnetic_v1.mp4 --
    プロトコルの差し替え（SAM2 等）で対応できる形にしてある。
 3. **rfdetr の MPS 対応** — 公式に MPS 対応の明記がないため、動かない場合は検出のみ CPU にフォールバックする。
 4. **全尺（166秒）の処理時間・メモリ計測** — 現状は 10〜20秒の試作クリップで検証する段階。
-5. **テスト・lint の自動化** — pytest／ruff の設定はまだ無い。
+5. **lint の自動化** — pytest は導入済み（`uv run pytest`、合成信号による解析解の検証）。ruff の設定はまだ無い。
 
 ## 今後の展望
 
