@@ -44,6 +44,39 @@ def test_dominant_period_survives_missing_values():
     assert abs(dominant_period(signal, FPS).period_sec - 1.0) < 0.05
 
 
+def test_dominant_period_ignores_the_central_lobe():
+    """自己相関の中央ローブの裾を周期と誤認しないこと。
+
+    平滑化された信号の自己相関は原点から単調に下がるため、探索範囲の単純な最大値を取ると
+    「範囲の左端」を返してしまう。実データで全トラックが探索下限（＝平滑化フィルタの窓幅）に
+    張り付き、音楽の拍と無関係な値を報告していた。
+    """
+    period = 1.0
+    t = np.arange(0, 30.0, 1.0 / FPS)
+    # 緩やかな正弦波（自己相関の中央ローブが広く、下限側が高い値を持つ信号）
+    signal = np.sin(2 * np.pi * t / period)
+    r = dominant_period(signal, FPS, min_period_sec=0.25, max_period_sec=4.0)
+    assert abs(r.period_sec - period) < 0.05, f"下限に張り付いた: {r.period_sec}"
+
+
+def test_dominant_period_never_returns_an_impossible_value():
+    """周期は必ず正で、指定した探索範囲に収まること。
+
+    放物線内挿の補正を制限していないと、ピーク近傍が平坦な信号で補正が発散し、
+    負の周期が出てしまう（実データで -1.18 秒を観測した）。
+    """
+    rng = np.random.default_rng(0)
+    for seed in range(30):
+        rng = np.random.default_rng(seed)
+        # 周期性が弱く自己相関が平坦になりやすい信号を色々流す
+        t = np.arange(0, 20.0, 1.0 / FPS)
+        signal = rng.normal(size=len(t)) + 0.3 * np.sin(2 * np.pi * t / rng.uniform(0.3, 3.0))
+        r = dominant_period(signal, FPS, 0.25, 4.0)
+        if np.isfinite(r.period_sec):
+            assert 0.25 - 1 / FPS <= r.period_sec <= 4.0 + 1 / FPS, f"seed={seed}: {r.period_sec}"
+            assert r.bpm > 0
+
+
 def test_dominant_period_is_nan_for_degenerate_input():
     assert np.isnan(dominant_period(np.zeros(300), FPS).period_sec)
     assert np.isnan(dominant_period(np.array([1.0, 2.0]), FPS).period_sec)
