@@ -20,6 +20,7 @@
 | 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
 | カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
+| 音楽の拍推定 | **librosa**（`audio.py`） | 音声から拍時刻とテンポを推定 | 動きの位相を測る基準と、拍同期の演出に使う。任意ステージ |
 | 単眼3D化 | **MotionBERT**（`lift3d.py`、モデル定義は `vendor/motionbert/`） | 2D キーポイント列を 3D に持ち上げる | **深層学習を「表現層」ではなく「計測改善層」として使う**。2D 関節角度が面外回転で歪む弱点を潰す目的で、出力は「関節角度」のまま説明可能。任意ステージ |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
@@ -62,9 +63,10 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`beats`／`render`／`features`／`run`）のエントリポイント |
 | `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
 | `src/pose_viz/lift3d.py` | MotionBERT による単眼 2D→3D リフティング。モデル推論を伴うので extract 側 |
+| `src/pose_viz/audio.py` | librosa による音楽の拍・テンポ推定。音声デコードは既存の ffmpeg パイプを使う |
 | `src/pose_viz/vendor/motionbert/` | MotionBERT のモデル定義（Apache-2.0）。取り込み理由と差分は同ディレクトリの README 参照 |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |

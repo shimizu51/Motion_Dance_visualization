@@ -25,6 +25,7 @@
 | 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
 | カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
+| 音楽の拍推定 | **librosa**（`audio.py`） | 音声から拍時刻とテンポを推定 | 動きの位相を測る基準と、拍同期の演出に使う。任意ステージ |
 | 単眼3D化 | **MotionBERT**（`lift3d.py`） | 2D キーポイント列を 3D に持ち上げる | **深層学習を「表現層」ではなく「計測改善層」として使う**。2D 関節角度が面外回転で歪む弱点を潰す目的で、出力は「関節角度」のまま説明可能。任意ステージ |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
@@ -45,9 +46,10 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`beats`／`render`／`features`／`run`）のエントリポイント |
 | `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
 | `src/pose_viz/lift3d.py` | MotionBERT による単眼 2D→3D リフティング。モデル推論を伴うので extract 側 |
+| `src/pose_viz/audio.py` | librosa による音楽の拍・テンポ推定。音声デコードは既存の ffmpeg パイプを使う |
 | `src/pose_viz/vendor/motionbert/` | MotionBERT のモデル定義（Apache-2.0）。取り込み理由と差分は同ディレクトリの README 参照 |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
@@ -156,6 +158,30 @@ uv run pose-viz lift3d --cache data/cache/jellyous.pkl.gz
 | 四肢長の変動係数（解剖学的には一定。低いほど良い） | 0.221 | **0.113**（−49%） |
 | 肘の負荷を算出できたフレームの割合 | 65〜67% | **92〜93%** |
 | 肩の負荷を算出できたフレームの割合 | 82% | **94〜95%** |
+
+### beats（音楽の拍・テンポ推定、任意）
+
+動画の音声から拍とテンポを推定してキャッシュに書き戻す。以降 `features` は
+「動きが拍のどの位相に集まるか」を、`render` は拍に同期した演出を出せるようになる。
+
+```bash
+uv run pose-viz beats --cache data/cache/jellyous.pkl.gz
+```
+
+| オプション | 内容 |
+|---|---|
+| `--cache` | extract で作成したキャッシュ（必須） |
+| `--video` | 元動画パス（省略時はキャッシュ内のパスを使う） |
+| `--out` | 書き出し先（既定: `--cache` と同じファイルを更新） |
+
+音声は既存の ffmpeg パイプでデコードし、librosa には波形だけを渡す。全尺 171 秒で 21 秒。
+
+拍に同期した演出は `render.beat_bloom`（既定 0 = 無効）で有効にする。
+**拍の瞬間にグローと粒子だけを増幅し、骨格の芯の明るさは変えない**（不変条件⑤を保つため）。
+
+```bash
+uv run pose-viz render --cache data/cache/jellyous.pkl.gz --config configs/beat.yaml --out data/output/beat.mp4
+```
 
 ### features（動作特徴量の算出、モデル推論なし）
 
