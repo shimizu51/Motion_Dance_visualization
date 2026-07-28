@@ -83,23 +83,61 @@ class PoseEstimator:
         self.model = self.model.to(self.device).eval()
         self.edges: list[tuple[int, int]] = [tuple(e) for e in self.model.config.edges]
 
-    def estimate(self, frame_bgr: np.ndarray, boxes_xyxy: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
-        """box ごとに (keypoints (17,2), scores (17,)) を返す。"""
-        if len(boxes_xyxy) == 0:
+    def estimate(
+        self,
+        frame_bgr: np.ndarray,
+        boxes_xyxy: np.ndarray,
+        masks_full: list[np.ndarray | None] | None = None,
+        occluded: list[bool] | None = None,
+        mask_suppress_alpha: float = 0.0,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """box ごとに (keypoints (17,2), scores (17,)) を返す。
+
+        `occluded[i]` が True の人物は、他人物のマスク領域を暗くした専用の画像で推論する
+        （box が重なっている隣人の手足に骨格が引き寄せられるのを防ぐ）。重なりが無い人物は
+        元フレームをそのまま使い、非重なりフレームでの速度は変えない。
+        """
+        n = len(boxes_xyxy)
+        if n == 0:
             return []
         from PIL import Image
-
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
 
         boxes_coco = boxes_xyxy.copy()
         boxes_coco[:, 2] = boxes_xyxy[:, 2] - boxes_xyxy[:, 0]
         boxes_coco[:, 3] = boxes_xyxy[:, 3] - boxes_xyxy[:, 1]
 
-        inputs = self.processor(image, boxes=[boxes_coco], return_tensors="pt").to(self.device)
-        with self._torch.no_grad():
-            outputs = self.model(**inputs)
-        pose_results = self.processor.post_process_pose_estimation(outputs, boxes=[boxes_coco])[0]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        needs_suppression = (
+            masks_full is not None and occluded is not None and mask_suppress_alpha > 0 and any(occluded)
+        )
+
+        if needs_suppression:
+            mask_union = np.zeros(frame_bgr.shape[:2], dtype=bool)
+            for m in masks_full:
+                if m is not None:
+                    mask_union |= m.astype(bool)
+
+            images = []
+            for i in range(n):
+                if occluded[i] and masks_full[i] is not None:
+                    other = mask_union & ~masks_full[i].astype(bool)
+                    suppressed = rgb.astype(np.float32) * (1.0 - mask_suppress_alpha * other[..., None])
+                    images.append(Image.fromarray(np.clip(suppressed, 0, 255).astype(np.uint8)))
+                else:
+                    images.append(Image.fromarray(rgb))
+            boxes_arg = [[boxes_coco[i]] for i in range(n)]
+            inputs = self.processor(images=images, boxes=boxes_arg, return_tensors="pt").to(self.device)
+            with self._torch.no_grad():
+                outputs = self.model(**inputs)
+            pose_results_per_image = self.processor.post_process_pose_estimation(outputs, boxes=boxes_arg)
+            pose_results = [image_results[0] for image_results in pose_results_per_image]
+        else:
+            image = Image.fromarray(rgb)
+            inputs = self.processor(image, boxes=[boxes_coco], return_tensors="pt").to(self.device)
+            with self._torch.no_grad():
+                outputs = self.model(**inputs)
+            pose_results = self.processor.post_process_pose_estimation(outputs, boxes=[boxes_coco])[0]
+
         return [
             (r["keypoints"].detach().cpu().numpy().astype(np.float32), r["scores"].detach().cpu().numpy().astype(np.float32))
             for r in pose_results

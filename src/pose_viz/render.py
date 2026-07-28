@@ -15,21 +15,9 @@ def _odd(k: int) -> int:
     return k if k % 2 == 1 else k + 1
 
 
-def _build_ghost_layer(frame_bgr: np.ndarray, track_frames: list[TrackFrame], rcfg: RenderConfig) -> np.ndarray:
+def _build_ghost_layer(frame_bgr: np.ndarray, track_frames_back_to_front: list[TrackFrame], rcfg: RenderConfig) -> np.ndarray:
+    """人物ごとのゴーストを奥から手前へアルファ合成で塗り重ねる（手前の人が奥の人を隠す）。"""
     h, w = frame_bgr.shape[:2]
-    mask_total = np.zeros((h, w), dtype=np.float32)
-    for tf in track_frames:
-        if tf.mask_png is None:
-            continue
-        m = decode_mask_crop(tf.mask_png, tf.box_xyxy, (h, w))
-        mask_total = np.maximum(mask_total, m)
-
-    if mask_total.max() <= 0:
-        return np.zeros((h, w, 3), dtype=np.float32)
-
-    if rcfg.ghost_blur > 0:
-        k = _odd(rcfg.ghost_blur)
-        mask_total = cv2.GaussianBlur(mask_total, (k, k), 0)
 
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR).astype(np.float32)
@@ -41,8 +29,50 @@ def _build_ghost_layer(frame_bgr: np.ndarray, track_frames: list[TrackFrame], rc
     tinted[..., 0] *= 1.05  # B
     tinted[..., 2] *= 0.9  # R
 
-    alpha = mask_total[..., None] * rcfg.ghost_alpha
-    return tinted * alpha
+    canvas = np.zeros((h, w, 3), dtype=np.float32)
+    any_mask = False
+    for tf in track_frames_back_to_front:
+        if tf.mask_png is None:
+            continue
+        m = decode_mask_crop(tf.mask_png, tf.box_xyxy, (h, w))
+        if rcfg.ghost_blur > 0:
+            k = _odd(rcfg.ghost_blur)
+            m = cv2.GaussianBlur(m, (k, k), 0)
+        any_mask = True
+        alpha = (m * rcfg.ghost_alpha)[..., None]
+        canvas = tinted * alpha + canvas * (1 - alpha)
+
+    if not any_mask:
+        return np.zeros((h, w, 3), dtype=np.float32)
+    return canvas
+
+
+def _draw_dashed_line(
+    canvas: np.ndarray, pt1: tuple[int, int], pt2: tuple[int, int], color: tuple[float, float, float], thickness: int
+) -> None:
+    x1, y1 = pt1
+    x2, y2 = pt2
+    dist = float(np.hypot(x2 - x1, y2 - y1))
+    if dist < 1:
+        return
+    dashes = max(1, int(dist // 10))
+    for i in range(dashes):
+        s = i / dashes
+        e = min(1.0, s + 0.5 / dashes)
+        p1 = (int(x1 + (x2 - x1) * s), int(y1 + (y2 - y1) * s))
+        p2 = (int(x1 + (x2 - x1) * e), int(y1 + (y2 - y1) * e))
+        cv2.line(canvas, p1, p2, color, thickness)
+
+
+def _draw_dashed_rect(
+    canvas: np.ndarray, pt1: tuple[int, int], pt2: tuple[int, int], color: tuple[float, float, float], thickness: int
+) -> None:
+    x1, y1 = pt1
+    x2, y2 = pt2
+    _draw_dashed_line(canvas, (x1, y1), (x2, y1), color, thickness)
+    _draw_dashed_line(canvas, (x2, y1), (x2, y2), color, thickness)
+    _draw_dashed_line(canvas, (x2, y2), (x1, y2), color, thickness)
+    _draw_dashed_line(canvas, (x1, y2), (x1, y1), color, thickness)
 
 
 def _draw_debug_overlay(canvas: np.ndarray, track_frames: list[TrackFrame], edges: list[tuple[int, int]]) -> None:
@@ -50,8 +80,13 @@ def _draw_debug_overlay(canvas: np.ndarray, track_frames: list[TrackFrame], edge
     for tf in track_frames:
         color = hue_to_bgr(hue_for_track(tf.track_id))
         x1, y1, x2, y2 = tf.box_xyxy.astype(int)
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(canvas, f"id={tf.track_id}", (x1, max(0, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        if tf.recovered:
+            # low_threshold 帯の検出で救済されたフレーム: 破線で区別する
+            _draw_dashed_rect(canvas, (x1, y1), (x2, y2), color, 2)
+        else:
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+        label = f"id={tf.track_id} d={tf.depth_rank} s={tf.det_score:.2f}"
+        cv2.putText(canvas, label, (x1, max(0, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         if tf.mask_png is not None:
             m = decode_mask_crop(tf.mask_png, tf.box_xyxy, (h, w))
             contours, _ = cv2.findContours((m > 0.5).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -83,10 +118,19 @@ def _draw_skeleton(
 
 
 def _build_skeleton_layer(
-    h: int, w: int, track_frames: list[TrackFrame], edges: list[tuple[int, int]], rcfg: RenderConfig
+    h: int,
+    w: int,
+    track_frames_back_to_front: list[TrackFrame],
+    edges: list[tuple[int, int]],
+    rcfg: RenderConfig,
+    depth_body_occlude: bool = False,
 ) -> np.ndarray:
     base = np.zeros((h, w, 3), dtype=np.float32)
-    for tf in track_frames:
+    for tf in track_frames_back_to_front:
+        if depth_body_occlude and tf.mask_png is not None:
+            # 手前の人物の胴体マスクで、奥側からここまで描いた骨格線をくり抜く
+            m = decode_mask_crop(tf.mask_png, tf.box_xyxy, (h, w))
+            base *= (1.0 - (m > 0.5).astype(np.float32))[..., None]
         color = hue_to_bgr(hue_for_track(tf.track_id))
         _draw_skeleton(base, tf.keypoints, tf.keypoint_scores, edges, color, thickness=rcfg.bone_thickness)
 
@@ -178,11 +222,15 @@ def render_frame(
         _draw_debug_overlay(canvas, track_frames, edges)
         return np.clip(canvas, 0, 255).astype(np.uint8)
 
-    canvas = _build_ghost_layer(frame_bgr, track_frames, render_cfg)
+    # depth_rank 降順 = 奥(値が大きい)から手前(0)の順。骨格層・ゴースト層はこの順で描き、
+    # 手前の人物が奥の人物を自然に覆うようにする。
+    ordered = sorted(track_frames, key=lambda tf: tf.depth_rank, reverse=True)
+
+    canvas = _build_ghost_layer(frame_bgr, ordered, render_cfg)
     canvas += _build_particle_layer(h, w, particle_system, frame_idx, render_cfg, residual_cfg.norm_scale)
     current_ids = {tf.track_id for tf in track_frames}
     canvas += _build_joint_trail_layer(h, w, cache, frame_idx, current_ids, edges, residual_cfg)
-    canvas += _build_skeleton_layer(h, w, track_frames, edges, render_cfg)
+    canvas += _build_skeleton_layer(h, w, ordered, edges, render_cfg, render_cfg.depth_body_occlude)
     canvas = _post_process(canvas, render_cfg)
 
     return np.clip(canvas, 0, 255).astype(np.uint8)
