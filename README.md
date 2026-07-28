@@ -25,6 +25,7 @@
 | 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
 | カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
+| 単眼3D化 | **MotionBERT**（`lift3d.py`） | 2D キーポイント列を 3D に持ち上げる | **深層学習を「表現層」ではなく「計測改善層」として使う**。2D 関節角度が面外回転で歪む弱点を潰す目的で、出力は「関節角度」のまま説明可能。任意ステージ |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
 
@@ -44,8 +45,10 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`render`／`features`／`run`）のエントリポイント |
 | `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
+| `src/pose_viz/lift3d.py` | MotionBERT による単眼 2D→3D リフティング。モデル推論を伴うので extract 側 |
+| `src/pose_viz/vendor/motionbert/` | MotionBERT のモデル定義（Apache-2.0）。取り込み理由と差分は同ディレクトリの README 参照 |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
@@ -124,6 +127,35 @@ uv run pose-viz render --cache data/cache/jellyous.pkl.gz --feature-modulation l
 ```bash
 uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --debug-overlay --out data/output/debug.mp4
 ```
+
+### lift3d（単眼2D→3D化、任意）
+
+**2D の関節角度は面外回転（カメラ面から外れた方向への屈曲）で系統的に歪む。**
+その計測誤差を潰すためだけに MotionBERT で 3D に持ち上げる。得られるのは説明不能な埋め込みでは
+なく、依然として「膝の屈曲角」という説明可能な量なので、**説明可能性を犠牲にせず精度だけが上がる**。
+
+```bash
+uv run pose-viz lift3d --cache data/cache/jellyous.pkl.gz
+```
+
+| オプション | 内容 |
+|---|---|
+| `--cache` | extract で作成したキャッシュ（必須） |
+| `--out` | 書き出し先（既定: `--cache` と同じファイルを更新） |
+| `--config` | 上書き設定 YAML |
+
+キャッシュに `keypoints_3d` を足すだけで既存フィールドは触らない。以降 `features` は
+自動的に 3D 由来の角度を使う（`feature.angle_source: auto`）。全尺 171 秒・19 トラックで約 90 秒。
+モデル定義は [`src/pose_viz/vendor/motionbert/`](src/pose_viz/vendor/motionbert/) に固定してあり
+（Apache-2.0）、重みは実行時に HuggingFace から取得する。
+
+**実測での効果**（`jellyous.mp4` 全尺、10 トラック）:
+
+| 指標 | 2D | 3D |
+|---|---|---|
+| 四肢長の変動係数（解剖学的には一定。低いほど良い） | 0.221 | **0.113**（−49%） |
+| 肘の負荷を算出できたフレームの割合 | 65〜67% | **92〜93%** |
+| 肩の負荷を算出できたフレームの割合 | 82% | **94〜95%** |
 
 ### features（動作特徴量の算出、モデル推論なし）
 

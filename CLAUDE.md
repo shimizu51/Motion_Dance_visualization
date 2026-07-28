@@ -20,6 +20,7 @@
 | 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
 | カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
+| 単眼3D化 | **MotionBERT**（`lift3d.py`、モデル定義は `vendor/motionbert/`） | 2D キーポイント列を 3D に持ち上げる | **深層学習を「表現層」ではなく「計測改善層」として使う**。2D 関節角度が面外回転で歪む弱点を潰す目的で、出力は「関節角度」のまま説明可能。任意ステージ |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
 
@@ -61,8 +62,10 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`render`／`features`／`run`）のエントリポイント |
 | `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
+| `src/pose_viz/lift3d.py` | MotionBERT による単眼 2D→3D リフティング。モデル推論を伴うので extract 側 |
+| `src/pose_viz/vendor/motionbert/` | MotionBERT のモデル定義（Apache-2.0）。取り込み理由と差分は同ディレクトリの README 参照 |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
@@ -105,6 +108,8 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
   動画間で一貫したスケールも持たない。重なりが無いフレームでは前回値を引き継ぐ。
 - **`camera_affine` は `(frame_count, 2, 3)`。** i 行目が「フレーム i-1 → i」の相似変換で、先頭フレームと
   推定失敗フレームは NaN（単位行列で埋めていないので、失敗を判別できる）。
+- **`keypoints_3d` は H36M-17 の関節順で、`keypoints`（COCO-17）とは並びが違う。** 同じ添字が別の関節を
+  指すので取り違えに注意（対応表は `lift3d.py` の `coco2h36m`）。`pose-viz lift3d` を走らせるまでは None。
 
 ### 未対応の設定・既知の落とし穴
 
@@ -163,6 +168,12 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
   人物の上にだけ乗っているかを目視確認する。
 - **キャッシュの再利用確認**: 同じ設定で `extract` を2回走らせて2回目がスキップされること、
   設定を変えると警告が出ることを確認する。
+- **単眼3D化**（任意。モデル推論を伴う。全尺 5140 フレーム・19 トラックで約 90 秒）:
+  ```bash
+  uv run pose-viz lift3d --cache data/cache/<name>.pkl.gz   # keypoints_3d を足して同じファイルを更新
+  ```
+  以降 `features` は自動的に 3D 由来の関節角度を使う（`feature.angle_source: auto`）。
+  2D と突き合わせて検証したいときは `angle_source: 2d` / `3d` で固定する。
 - **動作特徴量の算出と検証**（モデル推論なし。全尺でも 10 秒程度）:
   ```bash
   uv run pose-viz features --cache data/cache/<name>.pkl.gz --plot
