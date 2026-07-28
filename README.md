@@ -22,8 +22,9 @@
 | 人物検出・セグメンテーション | **RF-DETR**（`rfdetr` の `RFDETRSegSmall`） | 人物 box + mask を1パスで取得 | box/mask を同時取得できるため追加のセグメンテーションモデルは使わない |
 | トラッキング | 自前 IoU トラッカ（`tracking.py`） | フレーム間で人物 ID を維持 | 残差の連続性は ID の安定性に依存するため丁寧に実装 |
 | 骨格推定 | **ViTPose**（`transformers.VitPoseForPoseEstimation` / `usyd-community/vitpose-base-simple`） | 人物 box ごとに17点キーポイント推定 | top-down モデルなので box が必須。box は **COCO 形式 `(x,y,w,h)`** で渡す（xyxy ではない） |
-| 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用 |
+| 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
+| カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
 
@@ -49,8 +50,8 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
 | `src/pose_viz/tracking.py` | IoU ベースの簡易トラッカ。ID の生成・維持・失効を管理 |
 | `src/pose_viz/pose.py` | ViTPose ラッパ＋ One-Euro フィルタによる平滑化 |
-| `src/pose_viz/akaze.py` | AKAZE 抽出・BFMatcher 対応付け・アフィン推定による残差ベクトル算出 |
-| `src/pose_viz/cache.py` | extract 結果（pose／akaze／mask）の pkl.gz 保存・復元・設定ハッシュ検証 |
+| `src/pose_viz/akaze.py` | AKAZE 抽出・BFMatcher 対応付け・アフィン推定による残差ベクトル算出、および背景からのカメラ大域運動推定 |
+| `src/pose_viz/cache.py` | extract 結果（pose／akaze／mask／カメラ運動）の pkl.gz 保存・復元・スキーマ版と設定ハッシュの検証 |
 | `src/pose_viz/residual.py` | 粒子系・関節残像系の寿命とフェードカーブ |
 | `src/pose_viz/render.py` | ゴースト層・残差層・骨格残像層・骨格層のレイヤ合成コンポジタ |
 | `src/pose_viz/palette.py` | トラック ID ごとの配色・グロー・ブレンド関数 |
@@ -129,6 +130,9 @@ uv run pose-viz run data/input/Magnetic.mp4 --out data/output/magnetic_v1.mp4 --
    ブルームをかけた上で鋭い線を再度重ねる。
 6. **One-Euro フィルタの状態はトラック ID・関節ごとに独立させる**。共有すると ID 交代時に前の人物の
    平滑化状態が新しい人物に漏れる。
+7. **平滑化は「描画用」、計測は「生値」から行う**。One-Euro は低遅延・非対称なオンラインフィルタなので、
+   その出力を微分すると速度・加速度が減衰する。`keypoints`（平滑化後）は描画に、`keypoints_raw`
+   （平滑化前）は特徴量計算に使い、計測側では Savitzky-Golay のようなゼロ位相フィルタを別途かける。
 
 ## 実行環境
 
