@@ -10,6 +10,9 @@ import cv2
 import numpy as np
 
 
+CACHE_VERSION = 2  # スキーマを変えたら必ず上げる。読み込み時に不一致なら明確なエラーにする。
+
+
 @dataclass
 class TrackFrame:
     track_id: int
@@ -21,6 +24,11 @@ class TrackFrame:
     akaze_residual: np.ndarray  # (K, 2) float32
     akaze_residual_mag: np.ndarray  # (K,) float32
     akaze_point_ids: np.ndarray  # (K,) int64, トラック内で永続する特徴点 ID
+    det_score: float = 1.0  # 検出スコア（低スコア救済フレームでは threshold 未満になる）
+    depth_rank: int = 0  # 0 = 最も手前。重なりが無いフレームは前回値を維持（ヒステリシス）
+    depth_score: float = 0.0
+    occluded: bool = False  # このフレームで他人物と一定以上重なっているか
+    recovered: bool = False  # low_threshold 帯の検出でトラックが継続されたフレームか
 
 
 @dataclass
@@ -35,6 +43,7 @@ class ExtractCache:
     start: float = 0.0
     duration: float | None = None
     frames: dict[int, list[TrackFrame]] = field(default_factory=dict)
+    version: int = CACHE_VERSION
 
     def save(self, path: Path | str) -> None:
         path = Path(path)
@@ -45,7 +54,17 @@ class ExtractCache:
     @staticmethod
     def load(path: Path | str) -> "ExtractCache":
         with gzip.open(path, "rb") as f:
-            return pickle.load(f)
+            cache = pickle.load(f)
+        # `version` はデータクラスのフィールド既定値としてクラス属性にもなるため、
+        # 旧キャッシュ（pickle 復元時に __dict__ に 'version' が無い）を正しく検出するには
+        # getattr ではなくインスタンス辞書を直接見る必要がある。
+        cache_version = cache.__dict__.get("version", 1)
+        if cache_version != CACHE_VERSION:
+            raise ValueError(
+                f"キャッシュのスキーマバージョン({cache_version})が現在のコード({CACHE_VERSION})と"
+                f" 一致しません。'{path}' を extract からやり直してください。"
+            )
+        return cache
 
     def check_hash(self, expected_hash: str) -> None:
         if self.config_hash != expected_hash:
