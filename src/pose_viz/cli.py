@@ -37,11 +37,13 @@ def cmd_extract(args: argparse.Namespace) -> None:
     out_path = Path(args.out) if args.out else _default_cache_path(video_path)
 
     print(f"loading models (RF-DETR Seg Small / ViTPose)...")
-    detector = PersonDetector(threshold=cfg.detect.threshold, min_area_ratio=cfg.detect.min_area_ratio)
+    detector = PersonDetector(
+        threshold=cfg.detect.threshold, low_threshold=cfg.detect.low_threshold, min_area_ratio=cfg.detect.min_area_ratio
+    )
     pose_estimator = PoseEstimator(model_name=cfg.pose.model)
     pose_smoother = PoseSmoother(cfg.pose.oneeuro.min_cutoff, cfg.pose.oneeuro.beta)
-    tracker = IoUTracker(cfg.track.iou_threshold, cfg.track.max_age, cfg.track.min_hits)
     akaze_trackers: dict[int, AkazeResidualTracker] = {}
+    last_seen_frame: dict[int, int] = {}
 
     frames: dict[int, list[TrackFrame]] = {}
     frame_idx = -1
@@ -51,20 +53,49 @@ def cmd_extract(args: argparse.Namespace) -> None:
     ) as reader:
         fps = reader.fps
         width, height = reader.width, reader.height
+        tracker = IoUTracker(
+            frame_width=width,
+            frame_height=height,
+            score_threshold=cfg.detect.threshold,
+            iou_threshold=cfg.track.iou_threshold,
+            iou_threshold_low=cfg.track.iou_threshold_low,
+            max_age=cfg.track.max_age,
+            max_age_occluded=cfg.track.max_age_occluded,
+            min_hits=cfg.track.min_hits,
+            w_iou=cfg.track.w_iou,
+            w_scale=cfg.track.w_scale,
+            w_center=cfg.track.w_center,
+            center_gate=cfg.track.center_gate,
+            occlusion_containment=cfg.track.occlusion_containment,
+            depth_overlap_threshold=cfg.depth.overlap_threshold,
+            depth_w_area=cfg.depth.w_area,
+            depth_w_foot=cfg.depth.w_foot,
+            depth_ref_area_ema=cfg.depth.ref_area_ema,
+            depth_hysteresis=cfg.depth.hysteresis,
+        )
         for frame_idx, frame_bgr in enumerate(tqdm(reader, desc="extract")):
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
             det = detector.detect(frame_bgr)
-            track_ids = tracker.update(det.boxes_xyxy)
+            matches = tracker.update(det.boxes_xyxy, det.scores)
 
-            confirmed_idx = [i for i, t in enumerate(track_ids) if t is not None]
+            confirmed_idx = [i for i, m in enumerate(matches) if m is not None]
             track_frame_list: list[TrackFrame] = []
 
             if confirmed_idx:
                 boxes_conf = det.boxes_xyxy[confirmed_idx]
-                pose_out = pose_estimator.estimate(frame_bgr, boxes_conf)
+                masks_conf = [det.masks[i] if det.masks is not None else None for i in confirmed_idx]
+                occluded_conf = [matches[i].occluded for i in confirmed_idx]
+                pose_out = pose_estimator.estimate(
+                    frame_bgr,
+                    boxes_conf,
+                    masks_full=masks_conf,
+                    occluded=occluded_conf,
+                    mask_suppress_alpha=cfg.pose.mask_suppress_alpha,
+                )
                 t = frame_idx / fps
                 for local_i, det_i in enumerate(confirmed_idx):
-                    tid = track_ids[det_i]
+                    m = matches[det_i]
+                    tid = m.track_id
                     kp, sc = pose_out[local_i]
                     kp = pose_smoother.smooth(tid, t, kp)
                     box = boxes_conf[local_i]
@@ -77,7 +108,11 @@ def cmd_extract(args: argparse.Namespace) -> None:
                             cfg.akaze.ratio_test, cfg.akaze.max_displacement, cfg.akaze.max_points_per_person
                         )
                         akaze_trackers[tid] = ak_tracker
+                    elif frame_idx - last_seen_frame.get(tid, frame_idx) > cfg.track.akaze_reset_gap:
+                        # 長時間のオクルージョン明けは特徴点の対応付けが破綻するため張り直す
+                        ak_tracker.reset()
                     ak_res = ak_tracker.update(gray, box, mask_full)
+                    last_seen_frame[tid] = frame_idx
 
                     track_frame_list.append(
                         TrackFrame(
@@ -90,6 +125,11 @@ def cmd_extract(args: argparse.Namespace) -> None:
                             akaze_residual=ak_res.residual,
                             akaze_residual_mag=ak_res.residual_mag,
                             akaze_point_ids=ak_res.point_ids,
+                            det_score=m.det_score,
+                            depth_rank=m.depth_rank,
+                            depth_score=m.depth_score,
+                            occluded=m.occluded,
+                            recovered=m.recovered,
                         )
                     )
 
@@ -100,6 +140,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 if tid not in active_ids:
                     del akaze_trackers[tid]
                     pose_smoother.drop(tid)
+                    last_seen_frame.pop(tid, None)
 
     frame_count = frame_idx + 1
     cache = ExtractCache(

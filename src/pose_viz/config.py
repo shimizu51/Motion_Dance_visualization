@@ -21,14 +21,32 @@ class VideoConfig:
 class DetectConfig:
     model: str = "RFDETRSegSmall"
     threshold: float = 0.5
+    low_threshold: float = 0.15
     min_area_ratio: float = 0.002
 
 
 @dataclass
 class TrackConfig:
     iou_threshold: float = 0.3
+    iou_threshold_low: float = 0.25
     max_age: int = 15
+    max_age_occluded: int = 45
     min_hits: int = 3
+    w_iou: float = 1.0
+    w_scale: float = 0.5
+    w_center: float = 0.3
+    center_gate: float = 0.15
+    occlusion_containment: float = 0.3
+    akaze_reset_gap: int = 3
+
+
+@dataclass
+class DepthConfig:
+    overlap_threshold: float = 0.3
+    w_area: float = 1.0
+    w_foot: float = 0.5
+    ref_area_ema: float = 0.9
+    hysteresis: float = 0.1
 
 
 @dataclass
@@ -41,6 +59,7 @@ class OneEuroConfig:
 class PoseConfig:
     model: str = "usyd-community/vitpose-base-simple"
     keypoint_score_threshold: float = 0.3
+    mask_suppress_alpha: float = 0.8
     oneeuro: OneEuroConfig = field(default_factory=OneEuroConfig)
 
 
@@ -72,6 +91,7 @@ class RenderConfig:
     bone_thickness: int = 3
     vignette: float = 0.2
     grain: float = 0.02
+    depth_body_occlude: bool = False
 
 
 @dataclass
@@ -79,6 +99,7 @@ class Config:
     video: VideoConfig = field(default_factory=VideoConfig)
     detect: DetectConfig = field(default_factory=DetectConfig)
     track: TrackConfig = field(default_factory=TrackConfig)
+    depth: DepthConfig = field(default_factory=DepthConfig)
     pose: PoseConfig = field(default_factory=PoseConfig)
     akaze: AkazeConfig = field(default_factory=AkazeConfig)
     residual: ResidualConfig = field(default_factory=ResidualConfig)
@@ -109,6 +130,7 @@ class Config:
             "video_fps": self.video.fps,
             "detect": asdict(self.detect),
             "track": asdict(self.track),
+            "depth": asdict(self.depth),
             "pose": asdict(self.pose),
             "akaze": asdict(self.akaze),
         }

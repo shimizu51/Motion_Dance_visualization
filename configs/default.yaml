@@ -7,16 +7,33 @@ video:
 detect:
   model: RFDETRSegSmall
   threshold: 0.5
+  low_threshold: 0.15
   min_area_ratio: 0.002
 
 track:
   iou_threshold: 0.3
+  iou_threshold_low: 0.25
   max_age: 15
+  max_age_occluded: 45
   min_hits: 3
+  w_iou: 1.0
+  w_scale: 0.5
+  w_center: 0.3
+  center_gate: 0.15
+  occlusion_containment: 0.3
+  akaze_reset_gap: 3
+
+depth:
+  overlap_threshold: 0.3
+  w_area: 1.0
+  w_foot: 0.5
+  ref_area_ema: 0.9
+  hysteresis: 0.1
 
 pose:
   model: usyd-community/vitpose-base-simple
   keypoint_score_threshold: 0.3
+  mask_suppress_alpha: 0.8
   oneeuro:
     min_cutoff: 1.0
     beta: 0.01
@@ -44,3 +61,4 @@ render:
   bone_thickness: 3
   vignette: 0.2
   grain: 0.02
+  depth_body_occlude: false

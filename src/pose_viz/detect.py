@@ -17,13 +17,18 @@ class DetectionResult:
 
 
 class PersonDetector:
-    """RF-DETR Seg Small で人物の box とマスクを1パスで取得する。"""
+    """RF-DETR Seg Small で人物の box とマスクを1パスで取得する。
 
-    def __init__(self, threshold: float = 0.5, min_area_ratio: float = 0.002):
+    `low_threshold` はオクルージョンでスコアが下がった box も含めて返すための下限値。
+    新規トラック生成の可否は呼び出し側（tracking.py）が `threshold` との比較で判断する。
+    """
+
+    def __init__(self, threshold: float = 0.5, low_threshold: float = 0.15, min_area_ratio: float = 0.002):
         from rfdetr import RFDETRSegSmall
 
         self._model = RFDETRSegSmall()
         self.threshold = threshold
+        self.low_threshold = low_threshold
         self.min_area_ratio = min_area_ratio
 
     def detect(self, frame_bgr: np.ndarray) -> DetectionResult:
@@ -32,7 +37,7 @@ class PersonDetector:
         h, w = frame_bgr.shape[:2]
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
-        det = self._model.predict(image, threshold=self.threshold)
+        det = self._model.predict(image, threshold=self.low_threshold)
 
         keep = det.class_id == PERSON_CLASS_ID
         boxes = det.xyxy[keep].astype(np.float32)
