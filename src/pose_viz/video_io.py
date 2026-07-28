@@ -163,6 +163,42 @@ class FrameWriter:
         self.close()
 
 
+def has_audio_stream(path: Path | str) -> bool:
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "json", str(path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return False
+    return bool((json.loads(proc.stdout) or {}).get("streams"))
+
+
+def read_audio(
+    path: Path | str,
+    start: float = 0.0,
+    duration: float | None = None,
+    sample_rate: int = 22050,
+) -> np.ndarray | None:
+    """音声をモノラルの float32 波形として読む。音声トラックが無ければ None。
+
+    映像と同じく ffmpeg のパイプで読む（librosa の音声デコード用依存を増やさないため）。
+    `start`/`duration` は映像側と同じ区間を指定して、フレーム番号と時刻を揃えるのに使う。
+    """
+    if not has_audio_stream(path):
+        return None
+
+    cmd = ["ffmpeg", "-v", "error"]
+    if start:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", str(path)]
+    if duration is not None:
+        cmd += ["-t", str(duration)]
+    cmd += ["-f", "f32le", "-ac", "1", "-ar", str(sample_rate), "-vn", "-"]
+
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
+
 def mux_audio(
     video_no_audio: Path | str,
     audio_source: Path | str,

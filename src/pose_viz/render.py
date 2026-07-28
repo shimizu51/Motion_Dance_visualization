@@ -173,6 +173,7 @@ def _build_skeleton_layer(
     rcfg: RenderConfig,
     depth_body_occlude: bool = False,
     joint_weights: JointWeights = None,
+    beat: float = 0.0,
 ) -> np.ndarray:
     base = np.zeros((h, w, 3), dtype=np.float32)
     for tf in track_frames_back_to_front:
@@ -199,8 +200,9 @@ def _build_skeleton_layer(
     small_k, large_k = rcfg.skeleton_bloom
     bloom_small = cv2.GaussianBlur(base, (_odd(small_k), _odd(small_k)), 0)
     bloom_large = cv2.GaussianBlur(base, (_odd(large_k), _odd(large_k)), 0)
-    # 骨格レイヤーは必ず他レイヤーより最も明るくする: 鋭い芯を増幅しつつグローを重ねる
-    return base * 2.0 + bloom_small * 1.0 + bloom_large * 0.6
+    # 骨格レイヤーは必ず他レイヤーより最も明るくする: 鋭い芯を増幅しつつグローを重ねる。
+    # 拍に合わせて増幅するのはグロー側だけにして、芯の明るさは変えない（不変条件⑤を保つ）。
+    return base * 2.0 + (bloom_small * 1.0 + bloom_large * 0.6) * (1.0 + beat)
 
 
 def _build_joint_trail_layer(
@@ -229,7 +231,13 @@ def _build_joint_trail_layer(
 
 
 def _build_particle_layer(
-    h: int, w: int, particle_system: ParticleSystem, frame_idx: int, rcfg: RenderConfig, norm_scale: float
+    h: int,
+    w: int,
+    particle_system: ParticleSystem,
+    frame_idx: int,
+    rcfg: RenderConfig,
+    norm_scale: float,
+    beat: float = 0.0,
 ) -> np.ndarray:
     layer = np.zeros((h, w, 3), dtype=np.float32)
     for p, alpha in particle_system.iter_visible(frame_idx):
@@ -248,10 +256,10 @@ def _build_particle_layer(
         cv2.polylines(layer, [pts], False, col, thickness=2, lineType=cv2.LINE_AA)
 
     if layer.max() <= 0 or rcfg.particle_glow <= 0:
-        return layer
+        return layer * (1.0 + beat)
     k = _odd(rcfg.particle_glow)
     glow = cv2.GaussianBlur(layer, (k, k), 0)
-    return layer + glow
+    return (layer + glow) * (1.0 + beat)
 
 
 def _post_process(canvas: np.ndarray, rcfg: RenderConfig) -> np.ndarray:
@@ -279,7 +287,9 @@ def render_frame(
     particle_system: ParticleSystem,
     debug_overlay: bool = False,
     joint_weights: JointWeights = None,
+    beat: float = 0.0,
 ) -> np.ndarray:
+    """`beat` は 0..1 の拍の包絡（0 = 拍と無関係な既定動作）。"""
     h, w = frame_bgr.shape[:2]
 
     if debug_overlay:
@@ -292,11 +302,13 @@ def render_frame(
     ordered = sorted(track_frames, key=lambda tf: tf.depth_rank, reverse=True)
 
     canvas = _build_ghost_layer(frame_bgr, ordered, render_cfg)
-    canvas += _build_particle_layer(h, w, particle_system, frame_idx, render_cfg, residual_cfg.norm_scale)
+    canvas += _build_particle_layer(
+        h, w, particle_system, frame_idx, render_cfg, residual_cfg.norm_scale, beat
+    )
     current_ids = {tf.track_id for tf in track_frames}
     canvas += _build_joint_trail_layer(h, w, cache, frame_idx, current_ids, edges, residual_cfg)
     canvas += _build_skeleton_layer(
-        h, w, ordered, edges, render_cfg, render_cfg.depth_body_occlude, joint_weights
+        h, w, ordered, edges, render_cfg, render_cfg.depth_body_occlude, joint_weights, beat
     )
     canvas = _post_process(canvas, render_cfg)
 

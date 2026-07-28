@@ -123,6 +123,9 @@ class FeatureConfig:
     symmetry_window_sec: float = 2.0
     rhythm_min_period_sec: float = 0.25
     rhythm_max_period_sec: float = 4.0
+    #: 拍を何分割して同期を見るか。1 = 拍そのもの、2 = 8分、4 = 16分。
+    #: `pose-viz beats` を走らせたキャッシュでのみ使う。
+    beat_subdivision: int = 1
     load_percentile: float = 95.0  # 負荷代理指標の正規化基準（動画内相対）
     load_weights: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)  # 角速度・角加速度・ROM逸脱・制動
 
@@ -155,6 +158,10 @@ class RenderConfig:
     feature_highlight: float = 1.0  # 白熱コアの強さ（0 で無効）
     #: AKAZE 残差の「向き」で粒子の先頭を伸ばす倍率。0 で無効（従来の描画のまま）。
     residual_streak_gain: float = 0.0
+    #: 音楽の拍に同期したブルーム・粒子の増幅。0 で無効（従来の描画のまま）。
+    #: `pose-viz beats` でキャッシュに拍を入れてから使う。
+    beat_bloom: float = 0.0
+    beat_decay_sec: float = 0.12  # 拍からの減衰時定数（短いほど鋭く光る）
 
 
 @dataclass

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 import cv2
@@ -221,6 +222,24 @@ def cmd_render(args: argparse.Namespace) -> None:
         print(f"computing features for modulation ({cfg.render.feature_modulation})...")
         joint_weights = build_joint_weights(compute_features(cache, cfg.feature), cfg.render.feature_modulation)
 
+    # 拍に同期した演出。beat_bloom=0（既定）なら包絡は全て 0 で、従来と同一の描画になる。
+    beat_env = np.zeros(cache.frame_count, dtype=np.float32)
+    if cfg.render.beat_bloom > 0:
+        if cache.beat_times is None or len(cache.beat_times) < 2:
+            warnings.warn(
+                "render.beat_bloom > 0 ですが、キャッシュに拍がありません。"
+                " `pose-viz beats --cache ...` を先に実行してください（今回は演出なしで描画します）。",
+                stacklevel=2,
+            )
+        else:
+            from pose_viz.audio import beat_pulse
+
+            times = np.arange(cache.frame_count) / cache.fps
+            beat_env = (
+                cfg.render.beat_bloom * beat_pulse(times, cache.beat_times, cfg.render.beat_decay_sec)
+            ).astype(np.float32)
+            print(f"beat sync: {len(cache.beat_times)} 拍 / {cache.tempo_bpm:.1f} BPM")
+
     tmp_out = out_path if args.no_audio or not args.audio else out_path.with_suffix(".noaudio.mp4")
 
     # 抽出時と同じ区間（start/duration）を読まないと、cache の frame_idx がずれてしまう。
@@ -241,6 +260,7 @@ def cmd_render(args: argparse.Namespace) -> None:
                 particle_system,
                 debug_overlay=args.debug_overlay,
                 joint_weights=joint_weights.get(frame_idx) or None,
+                beat=float(beat_env[frame_idx]) if frame_idx < len(beat_env) else 0.0,
             )
             writer.write(out_frame)
 
@@ -299,6 +319,29 @@ def cmd_lift3d(args: argparse.Namespace) -> None:
     cache.save(out_path)
     print(f"saved cache: {out_path}")
     print(f"  3D lifted: {lifted}/{total} records ({lifted / total:.1%})")
+
+
+def cmd_beats(args: argparse.Namespace) -> None:
+    """動画の音声から拍を推定し、キャッシュに書き戻す（`lift3d` と同じ任意の強化ステージ）。"""
+    from pose_viz.audio import analyze_video_beats
+
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    video_path = Path(args.video) if args.video else Path(cache.video_path)
+    out_path = Path(args.out) if args.out else cache_path
+
+    print(f"analyzing beats: {video_path} [{cache.start}s +{cache.duration or 'all'}]")
+    info = analyze_video_beats(video_path, start=cache.start, duration=cache.duration)
+    if info is None:
+        print("  音声が無い、または拍を推定できませんでした（キャッシュは変更しません）")
+        return
+
+    cache.tempo_bpm = info.tempo_bpm
+    cache.beat_times = info.beat_times
+    cache.save(out_path)
+    span = float(info.beat_times[-1] - info.beat_times[0])
+    print(f"saved cache: {out_path}")
+    print(f"  tempo: {info.tempo_bpm:.1f} BPM   beats: {len(info)} 拍 / {span:.1f}s")
 
 
 def _default_features_path(cache_path: Path) -> Path:
@@ -391,6 +434,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_lift.add_argument("--out", help="書き出し先（既定: --cache と同じファイルを更新）")
     p_lift.add_argument("--config", help="上書き設定 YAML")
     p_lift.set_defaults(func=cmd_lift3d)
+
+    p_beats = sub.add_parser("beats", help="動画の音声から拍・テンポを推定してキャッシュに書き戻す")
+    p_beats.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_beats.add_argument("--video", help="元動画パス（省略時はキャッシュ内のパスを使う）")
+    p_beats.add_argument("--out", help="書き出し先（既定: --cache と同じファイルを更新）")
+    p_beats.set_defaults(func=cmd_beats)
 
     p_feat = sub.add_parser("features", help="キャッシュから解釈可能な動作特徴量を計算し CSV に出力する")
     p_feat.add_argument("--cache", required=True, help="extract で作成したキャッシュ")

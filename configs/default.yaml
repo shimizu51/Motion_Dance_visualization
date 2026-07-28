@@ -77,6 +77,7 @@ feature:
   symmetry_window_sec: 2.0
   rhythm_min_period_sec: 0.25
   rhythm_max_period_sec: 4.0
+  beat_subdivision: 1      # 1=拍 / 2=8分 / 4=16分（beats を走らせたときのみ）
   load_percentile: 95.0
   load_weights: [1.0, 1.0, 1.0, 1.0]   # 角速度・角加速度・ROM逸脱・制動（まず等重み）
 
@@ -105,3 +106,6 @@ render:
   feature_highlight: 1.0
   # AKAZE 残差の「向き」で粒子の先頭を伸ばす倍率。0 で無効
   residual_streak_gain: 0.0
+  # 音楽の拍に同期したブルーム・粒子の増幅。0 で無効。先に `pose-viz beats` が必要
+  beat_bloom: 0.0
+  beat_decay_sec: 0.12

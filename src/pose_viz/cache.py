@@ -56,6 +56,10 @@ class ExtractCache:
     # (frame_count, 2, 3) float32。i 行目は「フレーム i-1 → フレーム i」のカメラ相似変換。
     # 先頭フレームと推定失敗フレームは NaN（識別できるよう単位行列で埋めない）。camera.enabled=false なら None。
     camera_affine: np.ndarray | None = None
+    #: 音楽の拍。`pose-viz beats` を走らせるまで None。時刻は **この抽出区間の先頭を 0 秒**
+    #: とした秒数なので、`beat_times * fps` がそのまま frame_idx に対応する。
+    tempo_bpm: float | None = None
+    beat_times: np.ndarray | None = None
     version: int = CACHE_VERSION
 
     def by_track(self) -> dict[int, list[tuple[int, "TrackFrame"]]]:

@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "tqdm>=4.66",
     "scipy>=1.11",
+    "librosa>=0.10",
 ]
 
 [dependency-groups]

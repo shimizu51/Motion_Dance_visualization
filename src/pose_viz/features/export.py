@@ -24,7 +24,7 @@ from pose_viz.features.filters import nan_percentile
 from pose_viz.features.kinematics import JointKinematics, joint_kinematics, windowed_sparc
 from pose_viz.features.load import LoadFeatures, joint_load
 from pose_viz.features.posture import PostureFeatures, posture_features
-from pose_viz.features.rhythm import RhythmFeatures, dominant_period
+from pose_viz.features.rhythm import BeatSync, RhythmFeatures, beat_sync, dominant_period, motion_onsets
 from pose_viz.features.schema import KEYPOINT_NAMES, TrackSeries
 from pose_viz.features.series import build_track_series
 
@@ -39,6 +39,8 @@ class TrackFeatures:
     posture: PostureFeatures
     load: LoadFeatures
     rhythm: RhythmFeatures
+    #: 音楽の拍との同期度。`pose-viz beats` を走らせていないキャッシュでは None
+    beat: BeatSync | None
     #: 窓ごとの SPARC（滑らかさ）。**トラック間の比較にはこちらを使う。**
     #: SPARC は本来ひとつの動作区間に対する指標なので、数分の連続動作全体に一度だけ
     #: 適用した値は長さと内容に依存してしまい、トラック間で比較できない。
@@ -59,6 +61,13 @@ def compute_features(cache: ExtractCache, cfg: FeatureConfig) -> dict[int, Track
         rhythm = dominant_period(
             post.body_speed, series.fps, cfg.rhythm_min_period_sec, cfg.rhythm_max_period_sec
         )
+        beat = None
+        if cache.beat_times is not None and len(cache.beat_times) >= 2:
+            beat = beat_sync(
+                motion_onsets(post.body_speed, series.fps, series.t),
+                cache.beat_times,
+                cfg.beat_subdivision,
+            )
         out[track_id] = TrackFeatures(
             series=series,
             kinematics=kin,
@@ -66,6 +75,7 @@ def compute_features(cache: ExtractCache, cfg: FeatureConfig) -> dict[int, Track
             posture=post,
             load=load,
             rhythm=rhythm,
+            beat=beat,
             sparc_window=windowed_sparc(post.body_speed, series.fps, cfg.sparc_window_sec),
         )
     return out
@@ -153,6 +163,8 @@ def write_summary_csv(path: Path | str, features: dict[int, TrackFeatures], cach
         "track_id", "n_frames", "duration_sec", "first_frame", "last_frame",
         "observed_frac", "n_segments", "lr_suspect_frac", "angle_source",
         "sparc_median", "period_sec", "bpm", "rhythm_confidence",
+        # 音楽の拍との同期度（`pose-viz beats` を走らせていなければ空欄）
+        "music_bpm", "beat_phase_lock", "beat_lock_ratio", "beat_mean_phase", "beat_subdivision", "n_onsets",
     ]
     # 中央値を必ず併記する。2D 姿勢推定は 0.1〜0.4% のフレームでキーポイントが飛び、
     # そこだけ非現実的な速度が出る。平均は汚染されるが中央値は汚染されないので、
@@ -181,6 +193,12 @@ def write_summary_csv(path: Path | str, features: dict[int, TrackFeatures], cach
                 _fmt(tf.rhythm.period_sec),
                 _fmt(tf.rhythm.bpm),
                 _fmt(tf.rhythm.confidence),
+                _fmt(cache.tempo_bpm if cache.tempo_bpm is not None else float("nan")),
+                _fmt(tf.beat.phase_lock if tf.beat else float("nan")),
+                _fmt(tf.beat.lock_ratio if tf.beat else float("nan")),
+                _fmt(tf.beat.mean_phase if tf.beat else float("nan")),
+                tf.beat.subdivision if tf.beat else "",
+                tf.beat.n_onsets if tf.beat else "",
             ]
             for m in metric_names:
                 v = np.asarray(cols[m], dtype=np.float64)
