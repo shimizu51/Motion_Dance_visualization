@@ -193,6 +193,8 @@ def cmd_render(args: argparse.Namespace) -> None:
     from tqdm import tqdm
 
     cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    if getattr(args, "feature_modulation", None):
+        cfg.render.feature_modulation = args.feature_modulation
     cache_path = Path(args.cache)
     cache = ExtractCache.load(cache_path)
     cache.check_hash(cfg.extract_hash())
@@ -208,6 +210,16 @@ def cmd_render(args: argparse.Namespace) -> None:
         norm_scale=cfg.residual.norm_scale,
         max_trail_len=cfg.residual.max_trail_len,
     )
+
+    # 特徴量による変調は "off" のとき一切計算しない（従来と同一の出力を保証するため）。
+    # render.py は特徴量パッケージを import せず、関節ごとの 0..1 スカラーだけを受け取る。
+    joint_weights: dict[int, dict[int, np.ndarray]] = {}
+    if cfg.render.feature_modulation != "off":
+        from pose_viz.features.export import compute_features
+        from pose_viz.features.modulation import build_joint_weights
+
+        print(f"computing features for modulation ({cfg.render.feature_modulation})...")
+        joint_weights = build_joint_weights(compute_features(cache, cfg.feature), cfg.render.feature_modulation)
 
     tmp_out = out_path if args.no_audio or not args.audio else out_path.with_suffix(".noaudio.mp4")
 
@@ -228,6 +240,7 @@ def cmd_render(args: argparse.Namespace) -> None:
                 cfg.residual,
                 particle_system,
                 debug_overlay=args.debug_overlay,
+                joint_weights=joint_weights.get(frame_idx) or None,
             )
             writer.write(out_frame)
 
@@ -287,6 +300,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         out=args.out,
         config=args.config,
         debug_overlay=args.debug_overlay,
+        feature_modulation=args.feature_modulation,
         audio=args.audio,
         no_audio=not args.audio,
     )
@@ -311,6 +325,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--out", required=True, help="出力動画パス")
     p_render.add_argument("--config", help="上書き設定 YAML")
     p_render.add_argument("--debug-overlay", action="store_true", help="黒背景ではなく元映像に検出結果を重ねて確認する")
+    p_render.add_argument(
+        "--feature-modulation",
+        choices=["off", "load", "speed"],
+        help="骨格を特徴量で変調する（設定ファイルの render.feature_modulation を上書き）",
+    )
     p_render.add_argument("--audio", action="store_true", help="元動画の音声をミックスする")
     p_render.add_argument("--no-audio", action="store_true", help="(内部用) 音声を付けない")
     p_render.set_defaults(func=cmd_render)
@@ -332,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--start", type=float, default=None)
     p_run.add_argument("--duration", type=float, default=None)
     p_run.add_argument("--debug-overlay", action="store_true")
+    p_run.add_argument("--feature-modulation", choices=["off", "load", "speed"])
     p_run.add_argument("--audio", action="store_true")
     p_run.set_defaults(func=cmd_run)
 

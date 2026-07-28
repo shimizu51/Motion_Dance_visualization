@@ -13,6 +13,8 @@ class Particle:
     point_id: int
     positions: list[np.ndarray] = field(default_factory=list)
     residual_mags: list[float] = field(default_factory=list)
+    #: 残差ベクトル（向き付き）。大域運動を差し引いた瞬間的な動きの方向を表す
+    residuals: list[np.ndarray] = field(default_factory=list)
     birth_frame: int = 0
     last_seen_frame: int = 0
 
@@ -47,16 +49,20 @@ class ParticleSystem:
 
     def update(self, frame_idx: int, track_frames: list[TrackFrame]) -> None:
         for tf in track_frames:
-            for pt, res_mag, pid in zip(tf.akaze_points, tf.akaze_residual_mag, tf.akaze_point_ids):
+            for pt, res, res_mag, pid in zip(
+                tf.akaze_points, tf.akaze_residual, tf.akaze_residual_mag, tf.akaze_point_ids
+            ):
                 key = (tf.track_id, int(pid))
                 p = self._particles.get(key)
                 if p is None:
                     p = Particle(track_id=tf.track_id, point_id=int(pid), birth_frame=frame_idx)
                     self._particles[key] = p
                 p.positions.append(pt.astype(np.float32))
+                p.residuals.append(res.astype(np.float32))
                 p.residual_mags.append(float(res_mag))
                 if len(p.positions) > self.max_trail_len:
                     p.positions.pop(0)
+                    p.residuals.pop(0)
                     p.residual_mags.pop(0)
                 p.last_seen_frame = frame_idx
 

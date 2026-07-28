@@ -89,3 +89,10 @@ render:
   vignette: 0.2
   grain: 0.02
   depth_body_occlude: false
+  # 特徴量による骨格の変調。off = 特徴量を計算せず従来と完全に同一の出力。
+  # load = 関節負荷の代理指標 / speed = 関節速度
+  feature_modulation: "off"
+  feature_thickness_gain: 4.0
+  feature_highlight: 1.0
+  # AKAZE 残差の「向き」で粒子の先頭を伸ばす倍率。0 で無効
+  residual_streak_gain: 0.0

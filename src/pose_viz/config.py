@@ -131,6 +131,13 @@ class RenderConfig:
     vignette: float = 0.2
     grain: float = 0.02
     depth_body_occlude: bool = False
+    #: 特徴量で骨格を変調する。"off" のときは特徴量を一切計算せず、従来と同一の出力になる。
+    #: "load" = 関節負荷の代理指標、"speed" = 関節速度。
+    feature_modulation: str = "off"
+    feature_thickness_gain: float = 4.0  # 重み 1.0 のときに増える線幅（px）
+    feature_highlight: float = 1.0  # 白熱コアの強さ（0 で無効）
+    #: AKAZE 残差の「向き」で粒子の先頭を伸ばす倍率。0 で無効（従来の描画のまま）。
+    residual_streak_gain: float = 0.0
 
 
 @dataclass
