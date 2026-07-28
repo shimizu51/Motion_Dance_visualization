@@ -39,10 +39,20 @@ pose:
     beta: 0.01
 
 akaze:
+  # trail_mode は現在どのコードからも読まれていない（akaze_lk は未実装）
   trail_mode: akaze
   ratio_test: 0.75
   max_displacement: 60.0
   max_points_per_person: 400
+
+# 背景特徴点によるカメラ大域運動の推定。計測（特徴量）専用で、描画には影響しない。
+camera:
+  enabled: true
+  downscale: 2
+  ratio_test: 0.75
+  max_points: 1000
+  ransac_threshold: 3.0
+  mask_dilate: 15
 
 residual:
   lifetime_sec: 0.8

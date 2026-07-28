@@ -10,15 +10,16 @@ import cv2
 import numpy as np
 
 
-CACHE_VERSION = 2  # スキーマを変えたら必ず上げる。読み込み時に不一致なら明確なエラーにする。
+CACHE_VERSION = 3  # スキーマを変えたら必ず上げる。読み込み時に不一致なら明確なエラーにする。
 
 
 @dataclass
 class TrackFrame:
     track_id: int
     box_xyxy: np.ndarray  # (4,) float32, 作業解像度でのピクセル座標
-    keypoints: np.ndarray  # (17, 2) float32
-    keypoint_scores: np.ndarray  # (17,) float32
+    keypoints: np.ndarray  # (17, 2) float32, One-Euro 平滑化「後」。描画用（低遅延・非対称フィルタ）
+    keypoints_raw: np.ndarray  # (17, 2) float32, 平滑化「前」の生値。計測用（ゼロ位相フィルタを別途かける）
+    keypoint_scores: np.ndarray  # (17,) float32, ※ヒートマップのピーク値であり確率ではない（1.0 を超え得る）
     mask_png: bytes | None  # box_xyxy でクロップした人物マスクの PNG バイト列
     akaze_points: np.ndarray  # (K, 2) float32
     akaze_residual: np.ndarray  # (K, 2) float32
@@ -43,7 +44,23 @@ class ExtractCache:
     start: float = 0.0
     duration: float | None = None
     frames: dict[int, list[TrackFrame]] = field(default_factory=dict)
+    # (frame_count, 2, 3) float32。i 行目は「フレーム i-1 → フレーム i」のカメラ相似変換。
+    # 先頭フレームと推定失敗フレームは NaN（識別できるよう単位行列で埋めない）。camera.enabled=false なら None。
+    camera_affine: np.ndarray | None = None
     version: int = CACHE_VERSION
+
+    def by_track(self) -> dict[int, list[tuple[int, "TrackFrame"]]]:
+        """track_id ごとに (frame_idx, TrackFrame) の時系列を返す（frame_idx 昇順）。
+
+        `frames` は frame_idx をキーにした構造なので、1トラック分の時系列を取り出すには
+        全フレーム走査が要る。特徴量計算はトラック単位で行うため、ここで一度だけ転置する。
+        欠損フレームは「その frame_idx が現れない」ことで表現される（穴埋めはしない）。
+        """
+        out: dict[int, list[tuple[int, TrackFrame]]] = {}
+        for frame_idx in sorted(self.frames):
+            for tf in self.frames[frame_idx]:
+                out.setdefault(tf.track_id, []).append((frame_idx, tf))
+        return out
 
     def save(self, path: Path | str) -> None:
         path = Path(path)

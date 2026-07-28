@@ -65,10 +65,25 @@ class PoseConfig:
 
 @dataclass
 class AkazeConfig:
-    trail_mode: str = "akaze"  # "akaze" | "akaze_lk"
+    trail_mode: str = "akaze"  # "akaze" | "akaze_lk"（※ akaze_lk は未実装。現在この値は読まれていない）
     ratio_test: float = 0.75
     max_displacement: float = 60.0
     max_points_per_person: int = 400
+
+
+@dataclass
+class CameraConfig:
+    """背景特徴点によるカメラ大域運動（パン・ズーム・手ぶれ）の推定。
+
+    人物の絶対速度からカメラ自身の動きを差し引くための **計測用** の情報であり、描画には使わない。
+    """
+
+    enabled: bool = True
+    downscale: int = 2  # 縮小してから検出する（フル解像度の毎フレーム AKAZE は重いため）
+    ratio_test: float = 0.75
+    max_points: int = 1000
+    ransac_threshold: float = 3.0
+    mask_dilate: int = 15  # 人物マスクを膨張させ、輪郭付近の特徴点を背景から除外する（フル解像度の画素数）
 
 
 @dataclass
@@ -102,6 +117,7 @@ class Config:
     depth: DepthConfig = field(default_factory=DepthConfig)
     pose: PoseConfig = field(default_factory=PoseConfig)
     akaze: AkazeConfig = field(default_factory=AkazeConfig)
+    camera: CameraConfig = field(default_factory=CameraConfig)
     residual: ResidualConfig = field(default_factory=ResidualConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
 
@@ -133,6 +149,7 @@ class Config:
             "depth": asdict(self.depth),
             "pose": asdict(self.pose),
             "akaze": asdict(self.akaze),
+            "camera": asdict(self.camera),
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]

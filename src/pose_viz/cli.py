@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from pose_viz.akaze import AkazeResidualTracker
+from pose_viz.akaze import AkazeResidualTracker, CameraMotionEstimator
 from pose_viz.cache import ExtractCache, TrackFrame, encode_mask_crop
 from pose_viz.config import Config
 from pose_viz.detect import PersonDetector
@@ -44,6 +44,18 @@ def cmd_extract(args: argparse.Namespace) -> None:
     pose_smoother = PoseSmoother(cfg.pose.oneeuro.min_cutoff, cfg.pose.oneeuro.beta)
     akaze_trackers: dict[int, AkazeResidualTracker] = {}
     last_seen_frame: dict[int, int] = {}
+    camera_estimator = (
+        CameraMotionEstimator(
+            ratio_test=cfg.camera.ratio_test,
+            max_points=cfg.camera.max_points,
+            ransac_threshold=cfg.camera.ransac_threshold,
+            downscale=cfg.camera.downscale,
+            mask_dilate=cfg.camera.mask_dilate,
+        )
+        if cfg.camera.enabled
+        else None
+    )
+    camera_affine_rows: list[np.ndarray] = []
 
     frames: dict[int, list[TrackFrame]] = {}
     frame_idx = -1
@@ -76,6 +88,15 @@ def cmd_extract(args: argparse.Namespace) -> None:
         for frame_idx, frame_bgr in enumerate(tqdm(reader, desc="extract")):
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
             det = detector.detect(frame_bgr)
+
+            if camera_estimator is not None:
+                # 確定トラックだけでなく検出された全人物を除外する（未確定の人物も背景ではない）
+                person_union = np.any(det.masks, axis=0) if det.masks is not None and len(det.masks) else None
+                affine = camera_estimator.update(gray, person_union)
+                camera_affine_rows.append(
+                    affine if affine is not None else np.full((2, 3), np.nan, dtype=np.float32)
+                )
+
             matches = tracker.update(det.boxes_xyxy, det.scores)
 
             confirmed_idx = [i for i, m in enumerate(matches) if m is not None]
@@ -96,8 +117,11 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 for local_i, det_i in enumerate(confirmed_idx):
                     m = matches[det_i]
                     tid = m.track_id
-                    kp, sc = pose_out[local_i]
-                    kp = pose_smoother.smooth(tid, t, kp)
+                    kp_raw, sc = pose_out[local_i]
+                    # One-Euro は描画用の平滑化。計測用に生値も別途持たせる（初回フレームは
+                    # smooth() が入力と同一オブジェクトを返すため、明示的にコピーして切り離す）
+                    kp_raw = np.array(kp_raw, dtype=np.float32, copy=True)
+                    kp = pose_smoother.smooth(tid, t, kp_raw)
                     box = boxes_conf[local_i]
                     mask_full = det.masks[det_i] if det.masks is not None else None
                     mask_png = encode_mask_crop(mask_full, box) if mask_full is not None else None
@@ -119,6 +143,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                             track_id=tid,
                             box_xyxy=box.astype(np.float32),
                             keypoints=kp,
+                            keypoints_raw=kp_raw,
                             keypoint_scores=sc,
                             mask_png=mask_png,
                             akaze_points=ak_res.points,
@@ -143,6 +168,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                     last_seen_frame.pop(tid, None)
 
     frame_count = frame_idx + 1
+    camera_affine = np.stack(camera_affine_rows).astype(np.float32) if camera_affine_rows else None
     cache = ExtractCache(
         video_path=str(video_path),
         width=width,
@@ -154,9 +180,13 @@ def cmd_extract(args: argparse.Namespace) -> None:
         start=cfg.video.start,
         duration=cfg.video.duration,
         frames=frames,
+        camera_affine=camera_affine,
     )
     cache.save(out_path)
     print(f"saved cache: {out_path} ({frame_count} frames, {width}x{height} @ {fps:.3f}fps)")
+    if camera_affine is not None:
+        ok = int(np.isfinite(camera_affine).all(axis=(1, 2)).sum())
+        print(f"  camera motion: {ok}/{frame_count} frames estimated")
 
 
 def cmd_render(args: argparse.Namespace) -> None:
