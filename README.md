@@ -104,7 +104,19 @@ uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --out data/output/magn
 | `--out` | 出力動画パス（必須） |
 | `--config` | 上書き設定 YAML |
 | `--debug-overlay` | 黒背景ではなく元映像に検出結果を重ねて確認する |
+| `--feature-modulation` | `off`（既定）／`load`（関節負荷の代理指標）／`speed`（関節速度）で骨格を変調する |
 | `--audio` | 元動画の音声をミックスする |
+
+`--feature-modulation load` を付けると、**負荷が高い関節ほど線が太く・芯が白熱する**。
+色相は人物 ID を表す情報なので潰さず、白熱は彩度を抜く方向にだけ効かせているので、
+「誰か」と「どこに負荷が出ているか」を同じ骨格の上で同時に読める。
+`--debug-overlay` と併用すると各関節に数値が表示され、映像と数値を突き合わせられる。
+
+```bash
+uv run pose-viz render --cache data/cache/jellyous.pkl.gz --feature-modulation load --out data/output/load.mp4
+```
+
+**既定の `off` では特徴量を一切計算せず、従来と完全に同一の出力になる**（バイト単位で確認済み）。
 
 **検証はまず `--debug-overlay` から**行い、box が人物に追従しているか・ID が入れ替わっていないか・
 骨格が破綻していないか・AKAZE 点が人物の上にだけ乗っているかを目視確認する。
@@ -160,7 +172,9 @@ uv run pose-viz run data/input/Magnetic.mp4 --out data/output/magnetic_v1.mp4 --
 4. **キャッシュには設定ハッシュを埋め込む**。抽出時のパラメータ（検出閾値・トラッキング閾値等）が
    変わったら再抽出が必要になるため、`render` 側で不整合を検出して警告する。
 5. **骨格レイヤーは必ず最後に最高輝度で描く**（`render.py` の合成順）。ゴースト層・残差層より後に、
-   ブルームをかけた上で鋭い線を再度重ねる。
+   ブルームをかけた上で鋭い線を再度重ねる。特徴量による変調（`feature_modulation`）は
+   **足すだけで引かない**。重みが低い関節を暗くするとこの不変条件が崩れるため、基準の線は常に
+   元の明るさで描き、その上に太さと白熱コアを重ねる。
 6. **One-Euro フィルタの状態はトラック ID・関節ごとに独立させる**。共有すると ID 交代時に前の人物の
    平滑化状態が新しい人物に漏れる。
 7. **平滑化は「描画用」、計測は「生値」から行う**。One-Euro は低遅延・非対称なオンラインフィルタなので、
