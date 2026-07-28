@@ -9,11 +9,24 @@
 
 ## デモ（推論前 / 推論後）
 
-`data/input/Magnetic.mp4` の 8 秒区間（1:18〜1:26）を `extract` → `render` した比較。
+`data/input/Magnetic.mp4` の 8 秒区間（1:18〜1:26）を `extract` → `lift3d` → `beats` → `render` した比較。
+**関節負荷による骨格の変調（`--feature-modulation load`）と拍同期ブルーム（`configs/beat.yaml`）を有効**にしてあり、
+負荷が高い関節ほど線が太く白熱し、拍の瞬間にグローと粒子だけが増幅される。
 
 | 推論前（元動画） | 推論後（骨格＋残差の可視化） |
 |---|---|
 | ![推論前](assets/demo/before.gif) | ![推論後](assets/demo/after.gif) |
+
+再現手順:
+
+```bash
+uv run pose-viz extract data/input/Magnetic.mp4 --start 78 --duration 8 \
+  --config configs/magnetic.yaml --out data/cache/magnetic_demo.pkl.gz
+uv run pose-viz lift3d --cache data/cache/magnetic_demo.pkl.gz
+uv run pose-viz beats  --cache data/cache/magnetic_demo.pkl.gz
+uv run pose-viz render --cache data/cache/magnetic_demo.pkl.gz \
+  --config configs/beat.yaml --feature-modulation load --out data/output/magnetic_demo_after.mp4
+```
 
 ## モデルの構成要素
 
