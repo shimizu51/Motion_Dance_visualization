@@ -6,6 +6,7 @@ __pycache__/
 /data/input/
 /data/cache/
 /data/output/
+/data/features/
 
 *.pth
 *.onnx

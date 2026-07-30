@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from pose_viz.akaze import AkazeResidualTracker
+from pose_viz.akaze import AkazeResidualTracker, CameraMotionEstimator
 from pose_viz.cache import ExtractCache, TrackFrame, encode_mask_crop
 from pose_viz.config import Config
 from pose_viz.detect import PersonDetector
@@ -44,6 +45,18 @@ def cmd_extract(args: argparse.Namespace) -> None:
     pose_smoother = PoseSmoother(cfg.pose.oneeuro.min_cutoff, cfg.pose.oneeuro.beta)
     akaze_trackers: dict[int, AkazeResidualTracker] = {}
     last_seen_frame: dict[int, int] = {}
+    camera_estimator = (
+        CameraMotionEstimator(
+            ratio_test=cfg.camera.ratio_test,
+            max_points=cfg.camera.max_points,
+            ransac_threshold=cfg.camera.ransac_threshold,
+            downscale=cfg.camera.downscale,
+            mask_dilate=cfg.camera.mask_dilate,
+        )
+        if cfg.camera.enabled
+        else None
+    )
+    camera_affine_rows: list[np.ndarray] = []
 
     frames: dict[int, list[TrackFrame]] = {}
     frame_idx = -1
@@ -76,6 +89,15 @@ def cmd_extract(args: argparse.Namespace) -> None:
         for frame_idx, frame_bgr in enumerate(tqdm(reader, desc="extract")):
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
             det = detector.detect(frame_bgr)
+
+            if camera_estimator is not None:
+                # 確定トラックだけでなく検出された全人物を除外する（未確定の人物も背景ではない）
+                person_union = np.any(det.masks, axis=0) if det.masks is not None and len(det.masks) else None
+                affine = camera_estimator.update(gray, person_union)
+                camera_affine_rows.append(
+                    affine if affine is not None else np.full((2, 3), np.nan, dtype=np.float32)
+                )
+
             matches = tracker.update(det.boxes_xyxy, det.scores)
 
             confirmed_idx = [i for i, m in enumerate(matches) if m is not None]
@@ -96,8 +118,11 @@ def cmd_extract(args: argparse.Namespace) -> None:
                 for local_i, det_i in enumerate(confirmed_idx):
                     m = matches[det_i]
                     tid = m.track_id
-                    kp, sc = pose_out[local_i]
-                    kp = pose_smoother.smooth(tid, t, kp)
+                    kp_raw, sc = pose_out[local_i]
+                    # One-Euro は描画用の平滑化。計測用に生値も別途持たせる（初回フレームは
+                    # smooth() が入力と同一オブジェクトを返すため、明示的にコピーして切り離す）
+                    kp_raw = np.array(kp_raw, dtype=np.float32, copy=True)
+                    kp = pose_smoother.smooth(tid, t, kp_raw)
                     box = boxes_conf[local_i]
                     mask_full = det.masks[det_i] if det.masks is not None else None
                     mask_png = encode_mask_crop(mask_full, box) if mask_full is not None else None
@@ -119,6 +144,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                             track_id=tid,
                             box_xyxy=box.astype(np.float32),
                             keypoints=kp,
+                            keypoints_raw=kp_raw,
                             keypoint_scores=sc,
                             mask_png=mask_png,
                             akaze_points=ak_res.points,
@@ -143,6 +169,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
                     last_seen_frame.pop(tid, None)
 
     frame_count = frame_idx + 1
+    camera_affine = np.stack(camera_affine_rows).astype(np.float32) if camera_affine_rows else None
     cache = ExtractCache(
         video_path=str(video_path),
         width=width,
@@ -154,15 +181,21 @@ def cmd_extract(args: argparse.Namespace) -> None:
         start=cfg.video.start,
         duration=cfg.video.duration,
         frames=frames,
+        camera_affine=camera_affine,
     )
     cache.save(out_path)
     print(f"saved cache: {out_path} ({frame_count} frames, {width}x{height} @ {fps:.3f}fps)")
+    if camera_affine is not None:
+        ok = int(np.isfinite(camera_affine).all(axis=(1, 2)).sum())
+        print(f"  camera motion: {ok}/{frame_count} frames estimated")
 
 
 def cmd_render(args: argparse.Namespace) -> None:
     from tqdm import tqdm
 
     cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    if getattr(args, "feature_modulation", None):
+        cfg.render.feature_modulation = args.feature_modulation
     cache_path = Path(args.cache)
     cache = ExtractCache.load(cache_path)
     cache.check_hash(cfg.extract_hash())
@@ -178,6 +211,34 @@ def cmd_render(args: argparse.Namespace) -> None:
         norm_scale=cfg.residual.norm_scale,
         max_trail_len=cfg.residual.max_trail_len,
     )
+
+    # 特徴量による変調は "off" のとき一切計算しない（従来と同一の出力を保証するため）。
+    # render.py は特徴量パッケージを import せず、関節ごとの 0..1 スカラーだけを受け取る。
+    joint_weights: dict[int, dict[int, np.ndarray]] = {}
+    if cfg.render.feature_modulation != "off":
+        from pose_viz.features.export import compute_features
+        from pose_viz.features.modulation import build_joint_weights
+
+        print(f"computing features for modulation ({cfg.render.feature_modulation})...")
+        joint_weights = build_joint_weights(compute_features(cache, cfg.feature), cfg.render.feature_modulation)
+
+    # 拍に同期した演出。beat_bloom=0（既定）なら包絡は全て 0 で、従来と同一の描画になる。
+    beat_env = np.zeros(cache.frame_count, dtype=np.float32)
+    if cfg.render.beat_bloom > 0:
+        if cache.beat_times is None or len(cache.beat_times) < 2:
+            warnings.warn(
+                "render.beat_bloom > 0 ですが、キャッシュに拍がありません。"
+                " `pose-viz beats --cache ...` を先に実行してください（今回は演出なしで描画します）。",
+                stacklevel=2,
+            )
+        else:
+            from pose_viz.audio import beat_pulse
+
+            times = np.arange(cache.frame_count) / cache.fps
+            beat_env = (
+                cfg.render.beat_bloom * beat_pulse(times, cache.beat_times, cfg.render.beat_decay_sec)
+            ).astype(np.float32)
+            print(f"beat sync: {len(cache.beat_times)} 拍 / {cache.tempo_bpm:.1f} BPM")
 
     tmp_out = out_path if args.no_audio or not args.audio else out_path.with_suffix(".noaudio.mp4")
 
@@ -198,6 +259,8 @@ def cmd_render(args: argparse.Namespace) -> None:
                 cfg.residual,
                 particle_system,
                 debug_overlay=args.debug_overlay,
+                joint_weights=joint_weights.get(frame_idx) or None,
+                beat=float(beat_env[frame_idx]) if frame_idx < len(beat_env) else 0.0,
             )
             writer.write(out_frame)
 
@@ -207,6 +270,114 @@ def cmd_render(args: argparse.Namespace) -> None:
         print(f"saved (with audio): {out_path}")
     else:
         print(f"saved: {out_path}")
+
+
+def cmd_lift3d(args: argparse.Namespace) -> None:
+    """キャッシュの 2D キーポイントを 3D に持ち上げ、同じキャッシュに書き戻す。
+
+    モデル推論を伴うので extract 側の処理。`render.py` からは決して呼ばれない（不変条件③）。
+    既存フィールドは一切書き換えず `keypoints_3d` を足すだけなので、スキーマ版は据え置き。
+    """
+    from tqdm import tqdm
+
+    from pose_viz.lift3d import Pose3DLifter
+
+    cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    out_path = Path(args.out) if args.out else cache_path
+
+    by_track = cache.by_track()
+    total = sum(len(seq) for seq in by_track.values())
+    print(f"loading MotionBERT... ({len(by_track)} tracks, {total} records)")
+    lifter = Pose3DLifter(
+        clip_len=cfg.lift3d.clip_len,
+        stride=cfg.lift3d.stride,
+        flip_augment=cfg.lift3d.flip_augment,
+        device=cfg.lift3d.device,
+    )
+    print(f"  device={lifter.device}  clip_len={lifter.clip_len} stride={lifter.stride} flip={lifter.flip_augment}")
+
+    lifted = 0
+    for track_id, seq in tqdm(sorted(by_track.items()), desc="lift3d"):
+        # トラックの観測範囲を 1 刻みで埋めた密な系列にしてから持ち上げる
+        # （欠損をまたいで詰めると、存在しない動きを作ってしまう）
+        first, last = seq[0][0], seq[-1][0]
+        n = last - first + 1
+        xy = np.full((n, 17, 2), np.nan, dtype=np.float32)
+        sc = np.zeros((n, 17), dtype=np.float32)
+        for frame_idx, tf in seq:
+            xy[frame_idx - first] = tf.keypoints_raw
+            sc[frame_idx - first] = tf.keypoint_scores
+
+        xyz = lifter.lift(xy, sc)
+        for frame_idx, tf in seq:
+            row = xyz[frame_idx - first]
+            tf.keypoints_3d = row if np.isfinite(row).all() else None
+            lifted += tf.keypoints_3d is not None
+
+    cache.save(out_path)
+    print(f"saved cache: {out_path}")
+    print(f"  3D lifted: {lifted}/{total} records ({lifted / total:.1%})")
+
+
+def cmd_beats(args: argparse.Namespace) -> None:
+    """動画の音声から拍を推定し、キャッシュに書き戻す（`lift3d` と同じ任意の強化ステージ）。"""
+    from pose_viz.audio import analyze_video_beats
+
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    video_path = Path(args.video) if args.video else Path(cache.video_path)
+    out_path = Path(args.out) if args.out else cache_path
+
+    print(f"analyzing beats: {video_path} [{cache.start}s +{cache.duration or 'all'}]")
+    info = analyze_video_beats(video_path, start=cache.start, duration=cache.duration)
+    if info is None:
+        print("  音声が無い、または拍を推定できませんでした（キャッシュは変更しません）")
+        return
+
+    cache.tempo_bpm = info.tempo_bpm
+    cache.beat_times = info.beat_times
+    cache.save(out_path)
+    span = float(info.beat_times[-1] - info.beat_times[0])
+    print(f"saved cache: {out_path}")
+    print(f"  tempo: {info.tempo_bpm:.1f} BPM   beats: {len(info)} 拍 / {span:.1f}s")
+
+
+def _default_features_path(cache_path: Path) -> Path:
+    stem = cache_path.name.removesuffix(".pkl.gz")
+    return REPO_ROOT / "data" / "features" / f"{stem}.csv"
+
+
+def cmd_features(args: argparse.Namespace) -> None:
+    """キャッシュから解釈可能な動作特徴量を計算して CSV に書き出す（モデル推論なし）。"""
+    from pose_viz.features.export import compute_features, write_summary_csv, write_timeseries_csv
+
+    cfg = Config.load(DEFAULT_CONFIG_PATH, args.config)
+    cache_path = Path(args.cache)
+    cache = ExtractCache.load(cache_path)
+    cache.check_hash(cfg.extract_hash())
+
+    out_path = Path(args.out) if args.out else _default_features_path(cache_path)
+    summary_path = out_path.with_name(f"{out_path.stem}_summary.csv")
+
+    print(f"computing features ({len(cache.by_track())} tracks, source={cfg.feature.source})...")
+    features = compute_features(cache, cfg.feature)
+    if features:
+        used = next(iter(features.values())).angles.source
+        print(f"  joint angles from: {used.upper()}" + ("" if used == "3d" else "（`pose-viz lift3d` で 3D 化できます）"))
+
+    rows = write_timeseries_csv(out_path, features)
+    write_summary_csv(summary_path, features, cache)
+    print(f"saved timeseries: {out_path} ({rows} rows)")
+    print(f"saved summary:    {summary_path} ({len(features)} tracks)")
+
+    if args.plot:
+        from pose_viz.features.plots import plot_tracks
+
+        plot_dir = Path(args.plot_dir) if args.plot_dir else out_path.parent / f"{out_path.stem}_plots"
+        paths = plot_tracks(features, plot_dir, top_n=args.plot_top)
+        print(f"saved plots:      {plot_dir} ({len(paths)} figures)")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -224,6 +395,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         out=args.out,
         config=args.config,
         debug_overlay=args.debug_overlay,
+        feature_modulation=args.feature_modulation,
         audio=args.audio,
         no_audio=not args.audio,
     )
@@ -248,9 +420,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--out", required=True, help="出力動画パス")
     p_render.add_argument("--config", help="上書き設定 YAML")
     p_render.add_argument("--debug-overlay", action="store_true", help="黒背景ではなく元映像に検出結果を重ねて確認する")
+    p_render.add_argument(
+        "--feature-modulation",
+        choices=["off", "load", "speed"],
+        help="骨格を特徴量で変調する（設定ファイルの render.feature_modulation を上書き）",
+    )
     p_render.add_argument("--audio", action="store_true", help="元動画の音声をミックスする")
     p_render.add_argument("--no-audio", action="store_true", help="(内部用) 音声を付けない")
     p_render.set_defaults(func=cmd_render)
+
+    p_lift = sub.add_parser("lift3d", help="キャッシュの 2D キーポイントを MotionBERT で 3D に持ち上げる")
+    p_lift.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_lift.add_argument("--out", help="書き出し先（既定: --cache と同じファイルを更新）")
+    p_lift.add_argument("--config", help="上書き設定 YAML")
+    p_lift.set_defaults(func=cmd_lift3d)
+
+    p_beats = sub.add_parser("beats", help="動画の音声から拍・テンポを推定してキャッシュに書き戻す")
+    p_beats.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_beats.add_argument("--video", help="元動画パス（省略時はキャッシュ内のパスを使う）")
+    p_beats.add_argument("--out", help="書き出し先（既定: --cache と同じファイルを更新）")
+    p_beats.set_defaults(func=cmd_beats)
+
+    p_feat = sub.add_parser("features", help="キャッシュから解釈可能な動作特徴量を計算し CSV に出力する")
+    p_feat.add_argument("--cache", required=True, help="extract で作成したキャッシュ")
+    p_feat.add_argument("--out", help="時系列 CSV の出力先（既定: data/features/<キャッシュ名>.csv）")
+    p_feat.add_argument("--config", help="上書き設定 YAML")
+    p_feat.add_argument("--plot", action="store_true", help="検証用のグラフ（PNG）も出力する")
+    p_feat.add_argument("--plot-dir", help="グラフの出力先ディレクトリ")
+    p_feat.add_argument("--plot-top", type=int, default=3, help="グラフ化するトラック数（長い順）")
+    p_feat.set_defaults(func=cmd_features)
 
     p_run = sub.add_parser("run", help="extract と render を通しで実行する")
     p_run.add_argument("video", help="入力動画パス")
@@ -260,6 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--start", type=float, default=None)
     p_run.add_argument("--duration", type=float, default=None)
     p_run.add_argument("--debug-overlay", action="store_true")
+    p_run.add_argument("--feature-modulation", choices=["off", "load", "speed"])
     p_run.add_argument("--audio", action="store_true")
     p_run.set_defaults(func=cmd_run)
 

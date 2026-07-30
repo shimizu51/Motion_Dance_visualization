@@ -17,8 +17,11 @@
 | 人物検出・セグメンテーション | **RF-DETR**（`rfdetr` の `RFDETRSegSmall`） | 人物 box + mask を1パスで取得 | box/mask を同時取得できるため追加のセグメンテーションモデルは使わない |
 | トラッキング | 自前 IoU トラッカ（`tracking.py`） | フレーム間で人物 ID を維持 | 残差の連続性は ID の安定性に依存するため丁寧に実装 |
 | 骨格推定 | **ViTPose**（`transformers.VitPoseForPoseEstimation` / `usyd-community/vitpose-base-simple`） | 人物 box ごとに17点キーポイント推定 | top-down モデルなので box が必須。box は **COCO 形式 `(x,y,w,h)`** で渡す（xyxy ではない） |
-| 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用 |
+| 平滑化 | One-Euro フィルタ（`pose.py`） | 関節のジッタ除去 | トラック ID・関節ごとに独立して適用。**描画用**であり、平滑化前の生値も `keypoints_raw` として別途保存する |
 | 残差抽出 | **AKAZE**（`akaze.py`） | 人物マスク内の特徴点をフレーム間対応付け | `estimateAffinePartial2D` で大域運動を推定し、そこからのズレ（＝残差）を「見た目からわからない激しさ」として使う |
+| カメラ運動推定 | **AKAZE**（`akaze.py` の `CameraMotionEstimator`） | 人物を除いた背景からフレーム間の相似変換を推定 | 特徴量側でカメラのパン・ズームを差し引くための**計測専用**。描画には使わない |
+| 音楽の拍推定 | **librosa**（`audio.py`） | 音声から拍時刻とテンポを推定 | 動きの位相を測る基準と、拍同期の演出に使う。任意ステージ |
+| 単眼3D化 | **MotionBERT**（`lift3d.py`、モデル定義は `vendor/motionbert/`） | 2D キーポイント列を 3D に持ち上げる | **深層学習を「表現層」ではなく「計測改善層」として使う**。2D 関節角度が面外回転で歪む弱点を潰す目的で、出力は「関節角度」のまま説明可能。任意ステージ |
 | 残差の寿命管理 | `residual.py` | 粒子・関節軌跡を一定時間でフェードアウト | 残差が大きいほど寿命を延ばす |
 | 合成 | `render.py` | ゴースト層・残差層・骨格残像層・骨格層を加算合成 | 骨格層が必ず最高輝度になるよう最後に描く |
 
@@ -27,7 +30,7 @@
 **extract（重い・1回だけ）→ render（軽い・何度も回す）の2ステージ**に分離する。
 
 ```
-extract: 動画 → 検出/追跡/骨格/AKAZE軌跡 → data/cache/<name>.npz
+extract: 動画 → 検出/追跡/骨格/AKAZE軌跡 → data/cache/<name>.pkl.gz
 render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 出力mp4
 ```
 
@@ -42,7 +45,7 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
   `residual.py`／`render.py`／`palette.py`／`video_io.py`／`config.py`／`cli.py`）
 - `configs/` … `default.yaml`（全パラメータ既定値）と動画ごとの上書き設定
 - `data/input/` … 入力動画（`Magnetic.mp4`：3840x2160・AV1・23.976fps・166秒・Opus音声）。**git 管理外**
-- `data/cache/` … extract の出力（`.npz`）。**git 管理外**（重いので再生成する前提）
+- `data/cache/` … extract の出力（`.pkl.gz`：gzip 圧縮した pickle）。**git 管理外**（重いので再生成する前提）
 - `data/output/` … render の出力動画。**git 管理外**
 
 ### 未対応（今後）
@@ -54,20 +57,24 @@ render:  キャッシュ + 動画（薄い人物レイヤー用） + config → 
    プロトコルの差し替え（SAM2 等）で対応できる形にしてある。
 3. **rfdetr の MPS 対応** — 公式に MPS 対応の明記がないため、動かない場合は検出のみ CPU にフォールバックする。
 4. **全尺（166秒）の処理時間・メモリ計測** — 現状は 10〜20秒の試作クリップで検証する段階。
-5. **テスト・lint の自動化** — pytest／ruff の設定はまだ無い。
+5. **lint の自動化** — pytest は導入済み（`uv run pytest`、合成信号による解析解の検証）。ruff の設定はまだ無い。
 
 ## ディレクトリ構成
 
 | パス | 役割 |
 |------|-----|
-| `src/pose_viz/cli.py` | サブコマンド（`extract`／`render`／`run`）のエントリポイント |
+| `src/pose_viz/cli.py` | サブコマンド（`extract`／`lift3d`／`beats`／`render`／`features`／`run`）のエントリポイント |
+| `src/pose_viz/features/` | 解釈可能な動作特徴量（角度・速度・SPARC・負荷代理指標など）。**render からは import されない** |
+| `src/pose_viz/lift3d.py` | MotionBERT による単眼 2D→3D リフティング。モデル推論を伴うので extract 側 |
+| `src/pose_viz/audio.py` | librosa による音楽の拍・テンポ推定。音声デコードは既存の ffmpeg パイプを使う |
+| `src/pose_viz/vendor/motionbert/` | MotionBERT のモデル定義（Apache-2.0）。取り込み理由と差分は同ディレクトリの README 参照 |
 | `src/pose_viz/config.py` | dataclass 定義と YAML の読み込み・マージ |
 | `src/pose_viz/video_io.py` | ffmpeg サブプロセスによる rawvideo パイプ I/O（`FrameReader`／`FrameWriter`／`mux_audio`） |
 | `src/pose_viz/detect.py` | RF-DETR Seg Small ラッパ。person クラスでフィルタし box・score・mask を返す |
 | `src/pose_viz/tracking.py` | IoU ベースの簡易トラッカ。ID の生成・維持・失効を管理 |
 | `src/pose_viz/pose.py` | ViTPose ラッパ＋ One-Euro フィルタによる平滑化 |
-| `src/pose_viz/akaze.py` | AKAZE 抽出・BFMatcher 対応付け・アフィン推定による残差ベクトル算出 |
-| `src/pose_viz/cache.py` | extract 結果（pose／akaze／mask）の npz 保存・復元・設定ハッシュ検証 |
+| `src/pose_viz/akaze.py` | AKAZE 抽出・BFMatcher 対応付け・アフィン推定による残差ベクトル算出、および背景からのカメラ大域運動推定 |
+| `src/pose_viz/cache.py` | extract 結果（pose／akaze／mask／カメラ運動）の `.pkl.gz` 保存・復元・スキーマ版と設定ハッシュの検証 |
 | `src/pose_viz/residual.py` | 粒子系・関節残像系の寿命とフェードカーブ |
 | `src/pose_viz/render.py` | ゴースト層・残差層・骨格残像層・骨格層のレイヤ合成コンポジタ |
 | `src/pose_viz/palette.py` | トラック ID ごとの配色・グロー・ブレンド関数 |
@@ -82,10 +89,39 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
   推論が必要な処理はすべて `extract` 側（`detect.py`／`pose.py`／`akaze.py`）に閉じる。
 - **box 形式は COCO `(x,y,w,h)`**: ViTPose の `AutoProcessor` に渡す box はこの形式のみ受け付ける。
   RF-DETR や内部トラッカは xyxy を使うため、`pose.py` の境界で必ず変換する。
-- **マスクは bbox クロップ＋縮小＋PNG エンコードで保存**（`cache.py`）。フル解像度の二値マスクを
-  そのまま持つと動画全体でサイズが膨れるため。
+- **マスクは bbox クロップ＋PNG エンコードで保存**（`cache.py`）。フル解像度の二値マスクを
+  そのまま持つと動画全体でサイズが膨れるため（解像度の縮小はしていない）。
 - **トラック ID の安定性が残差の質を決める**: `tracking.py` の `max_age`／`min_hits` を緩めると
   ID 入れ替わりで軌跡が破綻するので、パラメータを変えたら必ず `--debug-overlay` で確認する。
+
+### キャッシュのスキーマ（`CACHE_VERSION = 3`）
+
+`ExtractCache` は `frames: dict[frame_idx -> list[TrackFrame]]` を持つ。**`track_id` はキーではなくフィールド**
+なので、1トラック分の時系列が欲しいときは `ExtractCache.by_track()` を使う（全フレーム走査を1回で済ませる）。
+
+読み解くときに間違えやすい点:
+
+- **欠損は「レコードが存在しない」ことで表現される。** NaN もゼロ埋めも補間もない。トラックがそのフレームで
+  マッチしなければ、`frames[i]` にそのトラックの要素が入らないだけ。
+- **`min_hits` の分だけ先頭フレームは必ず空になる**（既定 3 なら先頭2フレーム）。
+- **`keypoint_scores` はヒートマップのピーク値であり確率ではない。** 実測で 1.0 を超えるため
+  `[0,1]` を前提にしたコードを書かない。
+- **`depth_rank`／`depth_score` は深度ではない。** レイヤ合成順のための序数であり、metric な意味も
+  動画間で一貫したスケールも持たない。重なりが無いフレームでは前回値を引き継ぐ。
+- **`camera_affine` は `(frame_count, 2, 3)`。** i 行目が「フレーム i-1 → i」の相似変換で、先頭フレームと
+  推定失敗フレームは NaN（単位行列で埋めていないので、失敗を判別できる）。
+- **`keypoints_3d` は H36M-17 の関節順で、`keypoints`（COCO-17）とは並びが違う。** 同じ添字が別の関節を
+  指すので取り違えに注意（対応表は `lift3d.py` の `coco2h36m`）。`pose-viz lift3d` を走らせるまでは None。
+
+### 未対応の設定・既知の落とし穴
+
+- `akaze.trail_mode` は**どのコードからも読まれていない**（`akaze_lk` は未実装）。
+- `pose.keypoint_score_threshold` も**読まれていない**。`render.py` が `0.3` をハードコードしている。
+- `video.fps` を既定の `null` 以外にすると壊れる。`FrameReader` の ffmpeg コマンドに `-r` が無いため
+  **実際にはフレームが間引かれない**のに、タイムスタンプ・粒子寿命・出力 fps だけがずれる。
+- **`render.grain > 0` のとき出力は再現しない。** `_post_process` が `np.random.randn` を種を固定せずに
+  使っているため、同じ入力・同じコードでも毎回違うバイト列になる。出力を突き合わせて回帰を確認したい
+  ときは `--config` で `render.grain: 0.0` を渡すこと（それ以外の経路は決定的であることを確認済み）。
 
 ### 厳守する不変条件（崩すと描画が壊れる／キャッシュが壊れる）
 
@@ -97,9 +133,14 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
 4. **キャッシュには設定ハッシュを埋め込む**。抽出時のパラメータ（検出閾値・トラッキング閾値等）が
    変わったら再抽出が必要になるため、`render` 側で不整合を検出して警告する。
 5. **骨格レイヤーは必ず最後に最高輝度で描く**（`render.py` の合成順）。ゴースト層・残差層より後に、
-   ブルームをかけた上で鋭い線を再度重ねる。
+   ブルームをかけた上で鋭い線を再度重ねる。特徴量による変調（`feature_modulation`）は
+   **足すだけで引かない**。重みが低い関節を暗くするとこの不変条件が崩れるため、基準の線は常に
+   元の明るさで描き、その上に太さと白熱コアを重ねる。
 6. **One-Euro フィルタの状態はトラック ID・関節ごとに独立させる**。共有すると ID 交代時に前の人物の
    平滑化状態が新しい人物に漏れる。
+7. **平滑化は「描画用」、計測は「生値」から行う**。One-Euro は低遅延・非対称なオンラインフィルタなので、
+   その出力を微分すると速度・加速度が減衰する。`keypoints`（平滑化後）は描画に、`keypoints_raw`
+   （平滑化前）は特徴量計算に使い、計測側では Savitzky-Golay のようなゼロ位相フィルタを別途かける。
 
 ## 実行環境
 
@@ -119,17 +160,30 @@ Python 3.12（**uv** venv）。パッケージ化して `pose-viz` コマンド�
 - **試作（10〜20秒クリップ）**:
   ```bash
   uv run pose-viz extract data/input/Magnetic.mp4 --start 30 --duration 15 --config configs/magnetic.yaml
-  uv run pose-viz render --cache data/cache/Magnetic.npz --out data/output/magnetic_v1.mp4
+  uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --out data/output/magnetic_v1.mp4
   ```
 - **検証はまず `--debug-overlay` から**（見た目の調整より先に検出・追跡・姿勢の正しさを確認する）:
   ```bash
-  uv run pose-viz render --cache data/cache/Magnetic.npz --debug-overlay --out data/output/debug.mp4
+  uv run pose-viz render --cache data/cache/Magnetic.pkl.gz --debug-overlay --out data/output/debug.mp4
   ```
   box が人物に追従しているか・ID が入れ替わっていないか・骨格が破綻していないか・AKAZE 点が
   人物の上にだけ乗っているかを目視確認する。
 - **キャッシュの再利用確認**: 同じ設定で `extract` を2回走らせて2回目がスキップされること、
   設定を変えると警告が出ることを確認する。
-- **自動テストは未整備**。配線チェックは短尺クリップ＋`--debug-overlay` を最短の検証手段とする。
+- **単眼3D化**（任意。モデル推論を伴う。全尺 5140 フレーム・19 トラックで約 90 秒）:
+  ```bash
+  uv run pose-viz lift3d --cache data/cache/<name>.pkl.gz   # keypoints_3d を足して同じファイルを更新
+  ```
+  以降 `features` は自動的に 3D 由来の関節角度を使う（`feature.angle_source: auto`）。
+  2D と突き合わせて検証したいときは `angle_source: 2d` / `3d` で固定する。
+- **動作特徴量の算出と検証**（モデル推論なし。全尺でも 10 秒程度）:
+  ```bash
+  uv run pose-viz features --cache data/cache/<name>.pkl.gz --plot
+  # → data/features/<name>.csv（時系列）、<name>_summary.csv（トラック別要約）、<name>_plots/（検証グラフ）
+  ```
+- **テスト**: `uv run pytest`。正解データが無い領域なので、**既知の合成信号に対して解析解が
+  出るか**を検証の軸にしている（角度・角速度・周期・SPARC・カメラ補正）。
+  パラメータや式を変えたら必ずここを通す。
 
 ## 作業時の指針
 

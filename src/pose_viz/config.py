@@ -65,10 +65,69 @@ class PoseConfig:
 
 @dataclass
 class AkazeConfig:
-    trail_mode: str = "akaze"  # "akaze" | "akaze_lk"
+    trail_mode: str = "akaze"  # "akaze" | "akaze_lk"（※ akaze_lk は未実装。現在この値は読まれていない）
     ratio_test: float = 0.75
     max_displacement: float = 60.0
     max_points_per_person: int = 400
+
+
+@dataclass
+class CameraConfig:
+    """背景特徴点によるカメラ大域運動（パン・ズーム・手ぶれ）の推定。
+
+    人物の絶対速度からカメラ自身の動きを差し引くための **計測用** の情報であり、描画には使わない。
+    """
+
+    enabled: bool = True
+    downscale: int = 2  # 縮小してから検出する（フル解像度の毎フレーム AKAZE は重いため）
+    ratio_test: float = 0.75
+    max_points: int = 1000
+    ransac_threshold: float = 3.0
+    mask_dilate: int = 15  # 人物マスクを膨張させ、輪郭付近の特徴点を背景から除外する（フル解像度の画素数）
+
+
+@dataclass
+class Lift3DConfig:
+    """単眼 2D→3D リフティング（MotionBERT）。`pose-viz lift3d` でのみ使う。
+
+    2D 関節角度は面外回転で系統的に歪むため、その計測誤差を潰す目的でのみ深層学習を使う。
+    出力は依然として「関節角度」という説明可能な量のまま。
+    """
+
+    clip_len: int = 243  # モデルの上限。これを超える値は指定できない
+    stride: int | None = None  # 窓の移動量（既定は clip_len の半分＝5割重ねる）
+    flip_augment: bool = True  # 左右反転を平均するテスト時拡張。精度が上がる代わりに 2 倍の時間
+    device: str | None = None  # 既定は mps があれば mps
+
+
+@dataclass
+class FeatureConfig:
+    """解釈可能な動作特徴量の算出パラメータ。
+
+    キャッシュ済みの抽出結果から計算する **分析側** の設定なので、`extract_hash()` には含めない
+    （ここを変えても再 extract は不要）。
+    """
+
+    source: str = "raw"  # "raw"（平滑化前・計測用）| "smoothed"（One-Euro 後・比較用）
+    #: 関節角度をどの座標から出すか。"auto" = キャッシュに 3D があれば 3D、無ければ 2D。
+    #: "2d" / "3d" は明示的に固定する（2D と 3D を突き合わせて検証したいときに使う）。
+    angle_source: str = "auto"
+    min_score: float = 0.3  # これ未満のキーポイントは欠損として扱う（スコアは確率ではない点に注意）
+    max_gap_sec: float = 0.2  # これ以下の欠損は線形補間する。超えるとセグメントを分割する
+    scale_window_sec: float = 2.0  # 体幹長の移動中央値の窓（面外回転による瞬間的短縮を均す）
+    deriv_window_sec: float = 0.25  # Savitzky-Golay の窓（秒指定なので fps に依存しない）
+    deriv_polyorder: int = 3
+    foreshorten_threshold: float = 0.6  # セグメント長がこの比率を下回る区間は関節角度を信用しない
+    flip_min_sec: float = 0.2  # これより短い体の向きの反転は L/R 取り違えとみなす
+    sparc_window_sec: float = 2.0
+    symmetry_window_sec: float = 2.0
+    rhythm_min_period_sec: float = 0.25
+    rhythm_max_period_sec: float = 4.0
+    #: 拍を何分割して同期を見るか。1 = 拍そのもの、2 = 8分、4 = 16分。
+    #: `pose-viz beats` を走らせたキャッシュでのみ使う。
+    beat_subdivision: int = 1
+    load_percentile: float = 95.0  # 負荷代理指標の正規化基準（動画内相対）
+    load_weights: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)  # 角速度・角加速度・ROM逸脱・制動
 
 
 @dataclass
@@ -92,6 +151,17 @@ class RenderConfig:
     vignette: float = 0.2
     grain: float = 0.02
     depth_body_occlude: bool = False
+    #: 特徴量で骨格を変調する。"off" のときは特徴量を一切計算せず、従来と同一の出力になる。
+    #: "load" = 関節負荷の代理指標、"speed" = 関節速度。
+    feature_modulation: str = "off"
+    feature_thickness_gain: float = 4.0  # 重み 1.0 のときに増える線幅（px）
+    feature_highlight: float = 1.0  # 白熱コアの強さ（0 で無効）
+    #: AKAZE 残差の「向き」で粒子の先頭を伸ばす倍率。0 で無効（従来の描画のまま）。
+    residual_streak_gain: float = 0.0
+    #: 音楽の拍に同期したブルーム・粒子の増幅。0 で無効（従来の描画のまま）。
+    #: `pose-viz beats` でキャッシュに拍を入れてから使う。
+    beat_bloom: float = 0.0
+    beat_decay_sec: float = 0.12  # 拍からの減衰時定数（短いほど鋭く光る）
 
 
 @dataclass
@@ -102,6 +172,9 @@ class Config:
     depth: DepthConfig = field(default_factory=DepthConfig)
     pose: PoseConfig = field(default_factory=PoseConfig)
     akaze: AkazeConfig = field(default_factory=AkazeConfig)
+    camera: CameraConfig = field(default_factory=CameraConfig)
+    lift3d: Lift3DConfig = field(default_factory=Lift3DConfig)
+    feature: FeatureConfig = field(default_factory=FeatureConfig)
     residual: ResidualConfig = field(default_factory=ResidualConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
 
@@ -120,10 +193,10 @@ class Config:
     def extract_hash(self) -> str:
         """extract 段階の結果を左右する設定だけを対象にしたハッシュ。
 
-        render 側のパラメータ（配色・寿命の見た目調整など）を変えてもキャッシュは
-        無効化しない。`video.start`/`duration` はどの区間を切り出すかの指定であって
-        設定内容そのものではない（`cache.start`/`cache.duration` で別途管理する）ため、
-        ここには含めない。
+        render 側のパラメータ（配色・寿命の見た目調整など）と feature 側のパラメータ
+        （特徴量の窓幅・閾値など）を変えてもキャッシュは無効化しない。`video.start`/`duration` は
+        どの区間を切り出すかの指定であって設定内容そのものではない（`cache.start`/`cache.duration`
+        で別途管理する）ため、ここには含めない。
         """
         payload = {
             "video_width": self.video.width,
@@ -133,6 +206,7 @@ class Config:
             "depth": asdict(self.depth),
             "pose": asdict(self.pose),
             "akaze": asdict(self.akaze),
+            "camera": asdict(self.camera),
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]
